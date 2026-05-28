@@ -82,6 +82,7 @@ function findPublicDir(): string {
 const SESSIONS_DIR = path.join(process.env.HOME || "~", ".pi/agent/sessions");
 const SESSIONS_ARCHIVE_DIR = path.join(process.env.HOME || "~", ".pi/agent/sessions-archive");
 const INSTANCES_DIR = path.join(process.env.HOME || "~", ".pi/pistudio-instances");
+const PROJECTS_ARCHIVE_DIR_NAME = ".archive";
 
 // Instance registry — tracks all running Pi Studio servers
 function registerInstance(port: number, sessionFile: string, cwd: string) {
@@ -979,7 +980,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    if (urlPath === "/api/projects/delete" && req.method === "POST") {
+    if (urlPath === "/api/projects/archive-workspace" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
       req.on("end", () => {
@@ -998,22 +999,30 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             return;
           }
 
-          fs.rmSync(realTargetPath, { recursive: true, force: false });
+          fs.mkdirSync(SESSIONS_ARCHIVE_DIR, { recursive: true });
+          const projectsArchiveRoot = path.join(projectsRoot, PROJECTS_ARCHIVE_DIR_NAME);
+          fs.mkdirSync(projectsArchiveRoot, { recursive: true });
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const archivedWorkspacePath = path.join(
+            projectsArchiveRoot,
+            `${path.basename(realTargetPath)}-${timestamp}`
+          );
+          fs.renameSync(realTargetPath, archivedWorkspacePath);
 
           const sessionsDirName = encodeSessionDirName(realTargetPath);
           const sessionDirPath = path.join(SESSIONS_DIR, sessionsDirName);
-          let deletedSessionsDir: string | null = null;
+          let archivedSessionsDir: string | null = null;
           if (fs.existsSync(sessionDirPath) && fs.statSync(sessionDirPath).isDirectory()) {
-            fs.rmSync(sessionDirPath, { recursive: true, force: true });
-            deletedSessionsDir = sessionDirPath;
+            archivedSessionsDir = path.join(SESSIONS_ARCHIVE_DIR, `${path.basename(sessionDirPath)}-${timestamp}`);
+            fs.renameSync(sessionDirPath, archivedSessionsDir);
           }
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
               ok: true,
-              deletedPath: realTargetPath,
-              deletedSessionsDir,
+              archivedWorkspacePath,
+              archivedSessionsDir,
             })
           );
         } catch (e: any) {

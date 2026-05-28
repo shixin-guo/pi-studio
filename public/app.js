@@ -98,6 +98,7 @@ let workspaceLaunchInProgress = false;
 let pendingNewSessionRefresh = false;
 let sessionsLoaded = false;
 let deferredMirrorSync = null;
+let lastRenderedWelcomeWorkspacePath = null;
 
 const workspaceIndicatorEl = document.createElement('div');
 workspaceIndicatorEl.id = 'workspace-indicator';
@@ -128,8 +129,14 @@ function getCurrentWorkspacePath() {
   return current?.cwd || '';
 }
 
-function renderWorkspaceWelcome() {
-  messageRenderer.renderWelcome({ workspacePath: getCurrentWorkspacePath() });
+function renderWorkspaceWelcome({ force = false } = {}) {
+  const workspacePath = getCurrentWorkspacePath();
+  const welcomeVisible = Boolean(document.querySelector('.welcome'));
+  if (!force && welcomeVisible && lastRenderedWelcomeWorkspacePath === workspacePath) {
+    return;
+  }
+  messageRenderer.renderWelcome({ workspacePath });
+  lastRenderedWelcomeWorkspacePath = workspacePath;
 }
 
 function hasAnySessionsLoaded() {
@@ -543,6 +550,10 @@ chatForm.addEventListener('submit', (e) => {
 });
 
 messageInput.addEventListener('keydown', (e) => {
+  // IME composition uses Enter to confirm candidates; never send during composition.
+  const isImeComposing = e.isComposing || e.keyCode === 229;
+  if (isImeComposing) return;
+
   // Enter sends, Shift+Enter inserts newline
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();

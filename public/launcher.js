@@ -89,7 +89,7 @@ export class Launcher {
               Archive chats
             </button>
             <button class="launcher-menu-item danger" data-action="remove" data-path="${this.escAttr(p.path)}">
-              Remove workspace
+              🗃 Archive workspace
             </button>
           </div>
         </div>`;
@@ -207,7 +207,7 @@ export class Launcher {
         await this.archiveChats(projectPath);
         return;
       case 'remove':
-        await this.removeProject(projectPath);
+        await this.archiveWorkspace(projectPath);
         return;
       default:
         return;
@@ -270,10 +270,10 @@ export class Launcher {
     }
   }
 
-  async removeProject(projectPath) {
+  async archiveWorkspace(projectPath) {
     const projectName = this.projects.find((p) => p.path === projectPath)?.name || projectPath;
     const confirmed = window.confirm(
-      `Remove workspace "${projectName}"?\n\nThis will permanently delete:\n- The workspace folder\n- Its Pi session history`
+      `Archive workspace "${projectName}"?\n\nThis will move:\n- The workspace folder to projects archive\n- Its Pi session history to ~/.pi/agent/sessions-archive`
     );
     if (!confirmed) {
       this.menuProjectPath = null;
@@ -282,7 +282,11 @@ export class Launcher {
     }
 
     try {
-      await this.callProjectApi('/api/projects/delete', { path: projectPath }, 'Failed to remove workspace');
+      await this.callProjectApi(
+        '/api/projects/archive-workspace',
+        { path: projectPath },
+        'Failed to archive workspace'
+      );
       this.pinnedProjects.delete(projectPath);
       this.persistPinnedProjects();
       this.menuProjectPath = null;

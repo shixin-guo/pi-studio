@@ -12,6 +12,7 @@ export class SessionSidebar {
     this.collapsedProjects = new Set();
     this.searchQuery = '';
     this.favourites = JSON.parse(localStorage.getItem('pi-studio-favourites') || '[]');
+    this.archived = JSON.parse(localStorage.getItem('pi-studio-archived') || '[]');
     this.contextMenu = null;
 
     // Close context menu on click anywhere
@@ -26,8 +27,16 @@ export class SessionSidebar {
     localStorage.setItem('pi-studio-favourites', JSON.stringify(this.favourites));
   }
 
+  saveArchived() {
+    localStorage.setItem('pi-studio-archived', JSON.stringify(this.archived));
+  }
+
   isFavourite(filePath) {
     return this.favourites.includes(filePath);
+  }
+
+  isArchived(filePath) {
+    return this.archived.includes(filePath);
   }
 
   toggleFavourite(filePath) {
@@ -38,6 +47,17 @@ export class SessionSidebar {
       this.favourites.push(filePath);
     }
     this.saveFavourites();
+    this.render();
+  }
+
+  toggleArchived(filePath) {
+    const idx = this.archived.indexOf(filePath);
+    if (idx >= 0) {
+      this.archived.splice(idx, 1);
+    } else {
+      this.archived.push(filePath);
+    }
+    this.saveArchived();
     this.render();
   }
 
@@ -180,7 +200,7 @@ export class SessionSidebar {
   applySearch() {
     if (!this.searchQuery) {
       this.container.querySelectorAll('.session-item').forEach(el => el.classList.remove('hidden'));
-      this.container.querySelectorAll('.project-group').forEach(el => el.style.display = '');
+      this.container.querySelectorAll('.project-group, .archived-group').forEach(el => el.style.display = '');
       const favSection = this.container.querySelector('.favourites-group');
       if (favSection) favSection.style.display = '';
       // Remove full-text results
@@ -202,7 +222,7 @@ export class SessionSidebar {
       favSection.style.display = hasVisible ? '' : 'none';
     }
 
-    this.container.querySelectorAll('.project-group').forEach(group => {
+    this.container.querySelectorAll('.project-group, .archived-group').forEach(group => {
       let hasVisible = false;
       group.querySelectorAll('.session-item').forEach(item => {
         const title = (item.querySelector('.session-title')?.textContent || '').toLowerCase();
@@ -234,14 +254,12 @@ export class SessionSidebar {
     e.preventDefault();
     this.closeContextMenu();
 
-    const isFav = this.isFavourite(session.filePath);
     const menu = document.createElement('div');
     menu.className = 'session-context-menu';
 
+    const isArchived = this.isArchived(session.filePath);
     const items = [
-      { icon: isFav ? '★' : '☆', label: isFav ? 'Unfavourite' : 'Favourite', action: () => this.toggleFavourite(session.filePath) },
-      { icon: '✎', label: 'Rename', action: () => this.startRename(itemEl) },
-      { icon: '📋', label: 'Export HTML', action: () => this.exportSession(session) },
+      { icon: isArchived ? '📤' : '🗄️', label: isArchived ? 'Unarchive' : 'Archive', action: () => this.toggleArchived(session.filePath) },
     ];
 
     for (const item of items) {
@@ -343,18 +361,36 @@ export class SessionSidebar {
     const time = this.formatTime(session.timestamp);
     const tmuxTag = session.tmux ? '<span class="session-tag tmux-tag">tmux</span>' : '';
     const favIcon = this.isFavourite(session.filePath) ? '<span class="session-fav-icon">★</span>' : '';
+    const isArchived = this.isArchived(session.filePath);
+    const archiveBtnLabel = isArchived ? 'Unarchive session' : 'Archive session';
+    const archiveBtnIcon = `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <rect x="3" y="4" width="18" height="4" rx="1.5"></rect>
+        <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"></path>
+        <path d="M10 12h4"></path>
+      </svg>
+    `;
 
     item.innerHTML = `
       <div class="session-title-row">
         ${favIcon}
         <div class="session-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</div>
         ${tmuxTag}
+        <span class="session-action-slot">
+          <span class="session-time">${time}</span>
+          <button class="session-archive-btn" title="${archiveBtnLabel}" aria-label="${archiveBtnLabel}">${archiveBtnIcon}</button>
+        </span>
       </div>
-      <div class="session-meta">${time}</div>
     `;
 
     item.addEventListener('click', () => this.onSessionSelect(session, project));
-    item.addEventListener('contextmenu', (e) => this.showContextMenu(e, session, project, item));
+    const archiveBtn = item.querySelector('.session-archive-btn');
+    if (archiveBtn) {
+      archiveBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleArchived(session.filePath);
+      });
+    }
 
     return item;
   }
@@ -367,10 +403,15 @@ export class SessionSidebar {
 
     this.container.innerHTML = '';
 
-    // Favourites section — collect from all projects
+    // Favourites + archived sections — collect from all projects
     const favSessions = [];
+    const archivedSessions = [];
     for (const project of this.projects) {
       for (const session of project.sessions) {
+        if (this.isArchived(session.filePath)) {
+          archivedSessions.push({ session, project });
+          continue;
+        }
         if (this.isFavourite(session.filePath)) {
           favSessions.push({ session, project });
         }
@@ -397,6 +438,9 @@ export class SessionSidebar {
 
     // Regular project groups
     for (const project of this.projects) {
+      const visibleSessions = project.sessions.filter((session) => !this.isArchived(session.filePath));
+      if (visibleSessions.length === 0) continue;
+
       const group = document.createElement('div');
       group.className = 'project-group';
       const isCollapsed = this.collapsedProjects.has(project.dirName);
@@ -410,7 +454,7 @@ export class SessionSidebar {
       header.innerHTML = `
         <span class="chevron">▼</span>
         <span class="project-name" title="${project.path}">${shortPath}</span>
-        <span class="project-count">${project.sessions.length}</span>
+        <span class="project-count">${visibleSessions.length}</span>
         <button class="project-new-chat-btn" title="New chat in ${this.escapeHtml(shortPath)}" aria-label="New chat in ${this.escapeHtml(shortPath)}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
@@ -437,12 +481,32 @@ export class SessionSidebar {
       const sessionsDiv = document.createElement('div');
       sessionsDiv.className = `project-sessions${isCollapsed ? ' collapsed' : ''}`;
 
-      for (const session of project.sessions) {
+      for (const session of visibleSessions) {
         sessionsDiv.appendChild(this.buildSessionItem(session, project));
       }
 
       group.appendChild(sessionsDiv);
       this.container.appendChild(group);
+    }
+
+    if (archivedSessions.length > 0) {
+      archivedSessions.sort((a, b) => (b.session.mtime || 0) - (a.session.mtime || 0));
+      const archivedGroup = document.createElement('div');
+      archivedGroup.className = 'archived-group';
+
+      const header = document.createElement('div');
+      header.className = 'project-header archived-header';
+      header.innerHTML = `<span>🗃️</span> <span>Archived</span> <span class="project-count">${archivedSessions.length}</span>`;
+      archivedGroup.appendChild(header);
+
+      const sessionsDiv = document.createElement('div');
+      sessionsDiv.className = 'project-sessions';
+      for (const { session, project } of archivedSessions) {
+        sessionsDiv.appendChild(this.buildSessionItem(session, project));
+      }
+
+      archivedGroup.appendChild(sessionsDiv);
+      this.container.appendChild(archivedGroup);
     }
 
     if (this.searchQuery) this.applySearch();

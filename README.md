@@ -2,6 +2,39 @@
 
 A local Codex-style desktop app for the [Pi](https://github.com/badlogic/pi-mono) coding agent. No cloud, no account — runs entirely on your machine.
 
+## Upstream and fork status
+
+Pi Studio is a maintained fork of **Tau**, adapted for Pi-first, local development workflows.
+
+It keeps Tau's local-first coding-agent UI philosophy and extends it with stronger multi-project desktop behavior and a smoother Pi-specific experience.
+
+## Purpose and key changes
+
+Pi Studio focuses on practical day-to-day use with Pi:
+
+- Fully local operation for agent runtime, sessions, and files
+- Desktop-first multi-project workflow with isolated project windows
+- Browser extension mode for terminal-based Pi usage
+- Better long-session ergonomics (search, navigation, context controls)
+
+Key additions in this fork include:
+
+- **Tauri-native process manager** (`PiManager`) that runs one `pi --mode rpc` process per project window
+- **Dual runtime model**: desktop app + extension/browser mode
+- **Pi-focused UX refinements** across chat streaming, session history, model/thinking controls, and file workflows
+- **PWA support** in extension mode for installable mobile/desktop access
+
+## Pi Studio vs Tau
+
+| Area | Tau (upstream) | Pi Studio (this repo) |
+|------|-----------------|------------------------|
+| Scope | Base local coding-agent UI | Pi-focused fork for daily desktop use |
+| Process architecture | Upstream default process flow | Per-project `pi --mode rpc` managed by Rust `PiManager` |
+| Runtime options | Upstream mode(s) | Native Tauri app + Pi extension/browser mode |
+| Multi-project UX | Upstream baseline | Launcher-first parallel windows with isolated session state |
+| Pi workflow depth | General upstream integration | Extended Pi UX: chat streaming, session search, model/thinking controls, inline tool-call UX |
+| Mobile/browser access | Upstream-dependent setup | Built-in extension mode with PWA install support |
+
 ![Pi Studio dark mode](docs/images/dark.png)
 
 ![Pi Studio terracotta theme](docs/images/terracotta.png)

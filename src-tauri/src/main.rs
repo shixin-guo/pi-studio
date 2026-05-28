@@ -3,6 +3,9 @@
 mod pi_manager;
 
 use pi_manager::{is_port_in_use, wait_for_endpoint, wait_for_health, PiManager};
+use serde_json::Value;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -141,9 +144,18 @@ fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
 }
 
 fn find_static_dir(app: &tauri::App) -> PathBuf {
+    // In `tauri dev`, the process cwd is often `src-tauri/`, so `./public`
+    // points to a non-existent folder. Prefer the workspace root public dir.
+    let workspace_public = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("public");
+    if workspace_public.join("index.html").exists() {
+        return fs::canonicalize(&workspace_public).unwrap_or(workspace_public);
+    }
+
     let dev_path = std::env::current_dir().unwrap_or_default().join("public");
     if dev_path.join("index.html").exists() {
-        return dev_path;
+        return fs::canonicalize(&dev_path).unwrap_or(dev_path);
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir.join("public");
@@ -152,6 +164,79 @@ fn find_static_dir(app: &tauri::App) -> PathBuf {
         }
     }
     dev_path
+}
+
+fn list_session_files(root: &PathBuf) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return files;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let Ok(inner_entries) = fs::read_dir(path) else {
+                continue;
+            };
+            for inner in inner_entries.flatten() {
+                let session_path = inner.path();
+                if session_path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                    files.push(session_path);
+                }
+            }
+        }
+    }
+
+    files
+}
+
+fn extract_session_cwd(session_path: &PathBuf) -> Option<String> {
+    let file = File::open(session_path).ok()?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines().take(200).flatten() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("session") {
+            continue;
+        }
+        let cwd = value.get("cwd").and_then(Value::as_str)?.trim();
+        if cwd.is_empty() {
+            return None;
+        }
+        return Some(cwd.to_string());
+    }
+
+    None
+}
+
+fn find_latest_session_boot_target() -> Option<(String, String)> {
+    let sessions_root = dirs::home_dir()?.join(".pi/agent/sessions");
+    if !sessions_root.exists() {
+        eprintln!(
+            "[pi-desktop] startup resume skipped: sessions dir not found at {}",
+            sessions_root.display()
+        );
+        return None;
+    }
+
+    let session_files = list_session_files(&sessions_root);
+    let latest = session_files
+        .into_iter()
+        .filter_map(|path| {
+            let mtime = fs::metadata(&path).ok()?.modified().ok()?;
+            Some((mtime, path))
+        })
+        .max_by_key(|(mtime, _)| *mtime)?;
+
+    let session_path = latest.1;
+    let cwd = extract_session_cwd(&session_path)?;
+    Some((cwd, session_path.to_string_lossy().to_string()))
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -165,17 +250,33 @@ fn main() {
             let static_dir = find_static_dir(app);
             let manager = Arc::new(PiManager::new(static_dir));
 
-            let cwd = dirs::home_dir()
+            let home_cwd = dirs::home_dir()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
+            let (cwd, session_path) = match find_latest_session_boot_target() {
+                Some((resolved_cwd, resolved_session_path)) => {
+                    eprintln!(
+                        "[pi-desktop] startup resume target selected: cwd={} session={}",
+                        resolved_cwd, resolved_session_path
+                    );
+                    (resolved_cwd, Some(resolved_session_path))
+                }
+                None => {
+                    eprintln!(
+                        "[pi-desktop] startup resume fallback: using home directory {}",
+                        home_cwd
+                    );
+                    (home_cwd, None)
+                }
+            };
 
             let initial_port = 3001u16;
 
             // Dev mode: pi may already be running (started by beforeDevCommand)
             if !is_port_in_use(initial_port) {
                 manager
-                    .spawn(&cwd, initial_port, None)
+                    .spawn(&cwd, initial_port, session_path.as_deref())
                     .expect("Failed to start pi process");
             } else {
                 eprintln!(
