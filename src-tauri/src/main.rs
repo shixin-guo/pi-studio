@@ -7,7 +7,6 @@ use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::image::Image;
@@ -127,57 +126,7 @@ async fn cmd_pick_folder(app: AppHandle) -> Option<String> {
 /// Returns installed pi CLI version string (e.g. "pi 0.24.1")
 #[tauri::command]
 fn cmd_get_pi_version() -> Result<String, String> {
-    let pi_bin = if let Ok(explicit) = std::env::var("PI_BIN") {
-        let candidate = explicit.trim().to_string();
-        if candidate.is_empty() {
-            "pi".to_string()
-        } else {
-            candidate
-        }
-    } else {
-        let detected = Command::new("/bin/sh")
-            .arg("-lc")
-            .arg("command -v pi")
-            .output();
-        match detected {
-            Ok(out) if out.status.success() => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() {
-                    "pi".to_string()
-                } else {
-                    path
-                }
-            }
-            _ => "pi".to_string(),
-        }
-    };
-
-    let output = Command::new(&pi_bin)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("Failed to run {} --version: {}", pi_bin, e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err(format!(
-                "{} --version exited with status {}",
-                pi_bin, output.status
-            ));
-        }
-        return Err(format!(
-            "{} --version exited with status {}: {}",
-            pi_bin, output.status, stderr
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let version = if !stdout.is_empty() { stdout } else { stderr };
-    if version.is_empty() {
-        return Err("pi --version returned empty output".to_string());
-    }
-    Ok(version)
+    PiManager::resolve_pi_version()
 }
 
 // ─── Window helpers ───────────────────────────────────────────────────────────
@@ -404,15 +353,12 @@ fn main() {
             app.manage(manager.clone());
 
             if startup_ok {
-                let app_handle = app.handle().clone();
+                if let Err(e) = open_workspace_window(&app.handle().clone(), initial_port) {
+                    eprintln!("Failed to open window: {}", e);
+                }
                 tauri::async_runtime::spawn(async move {
-                    match wait_for_health(initial_port, 30).await {
-                        Ok(_) => {
-                            if let Err(e) = open_workspace_window(&app_handle, initial_port) {
-                                eprintln!("Failed to open window: {}", e);
-                            }
-                        }
-                        Err(e) => eprintln!("Pi failed to start: {}", e),
+                    if let Err(e) = wait_for_health(initial_port, 30).await {
+                        eprintln!("Pi failed to start: {}", e);
                     }
                 });
             }

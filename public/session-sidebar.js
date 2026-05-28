@@ -89,8 +89,16 @@ export class SessionSidebar {
     }
 
     console.error('[Sidebar] Failed to load sessions:', lastError);
+    const reason = String(lastError?.message || lastError || '').toLowerCase();
+    const likelyRuntimeDown =
+      reason.includes('failed to fetch') ||
+      reason.includes('networkerror') ||
+      reason.includes('load failed');
+    const message = likelyRuntimeDown
+      ? 'Failed to load sessions. Pi runtime may be unavailable.'
+      : 'Failed to load sessions.';
     this.container.innerHTML =
-      '<div class="session-loading">Failed to load sessions <button class="retry-link" id="retry-load-sessions">Retry</button></div>';
+      `<div class="session-loading">${message} <button class="retry-link" id="retry-load-sessions">Retry</button></div>`;
     const retryBtn = this.container.querySelector('#retry-load-sessions');
     if (retryBtn) {
       retryBtn.addEventListener('click', () => this.loadSessions());

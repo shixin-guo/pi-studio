@@ -35,7 +35,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../public": "public"
+      "../public": "public",
+      "../extensions": "extensions"
     }
   }
 }
