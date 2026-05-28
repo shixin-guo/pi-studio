@@ -15,7 +15,50 @@ import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
 import QRCode from "qrcode";
+
+type OpenTarget = {
+  id: string;
+  label: string;
+  appName?: string;
+};
+
+const OPEN_TARGETS: OpenTarget[] = [
+  { id: "vscode", label: "VS Code", appName: "Visual Studio Code" },
+  { id: "cursor", label: "Cursor", appName: "Cursor" },
+  { id: "zed", label: "Zed", appName: "Zed" },
+  { id: "finder", label: "Finder" },
+  { id: "terminal", label: "Terminal", appName: "Terminal" },
+  { id: "ghostty", label: "Ghostty", appName: "Ghostty" },
+  { id: "xcode", label: "Xcode", appName: "Xcode" },
+];
+
+function execFileAsync(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+async function isOpenAppAvailable(appName: string): Promise<boolean> {
+  try {
+    await execFileAsync("open", ["-Ra", appName]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getAvailableOpenTargets(): Promise<OpenTarget[]> {
+  const checks = await Promise.all(OPEN_TARGETS.map(async (target) => {
+    if (!target.appName) return true;
+    return isOpenAppAvailable(target.appName);
+  }));
+  return OPEN_TARGETS.filter((_, idx) => checks[idx]);
+}
 
 // Load Pi Studio settings from ~/.pi/agent/settings.json (falls back to env vars)
 function loadSettings(): { port: number; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string } {
@@ -1164,24 +1207,76 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
+    if (urlPath === "/api/open-targets" && req.method === "GET") {
+      try {
+        const targets = await getAvailableOpenTargets();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          targets: targets.map((target) => ({ id: target.id, label: target.label })),
+        }));
+      } catch (err: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // File browser: open file natively
     if (urlPath === "/api/open" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
+      req.on("end", () => {
         try {
-          const { filePath: fp } = JSON.parse(body);
+          const { filePath: fp, target } = JSON.parse(body);
           if (!fp || typeof fp !== "string") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "filePath required" }));
             return;
           }
-          const { execFile } = await import("node:child_process");
-          execFile("open", [fp], (err) => {
-            if (err) console.error("[Mirror] open failed:", err.message);
-          });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
+
+          const openDone = (err?: Error | null) => {
+            if (err) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: err.message }));
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          };
+
+          const openWithApp = (appName: string) => {
+            execFile("open", ["-a", appName, fp], openDone);
+          };
+
+          switch (target) {
+            case undefined:
+            case null:
+            case "finder":
+              execFile("open", [fp], openDone);
+              break;
+            case "vscode":
+              openWithApp("Visual Studio Code");
+              break;
+            case "cursor":
+              openWithApp("Cursor");
+              break;
+            case "zed":
+              openWithApp("Zed");
+              break;
+            case "terminal":
+              openWithApp("Terminal");
+              break;
+            case "ghostty":
+              openWithApp("Ghostty");
+              break;
+            case "xcode":
+              openWithApp("Xcode");
+              break;
+            default:
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: `Unsupported open target: ${String(target)}` }));
+              break;
+          }
         } catch (err: any) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));

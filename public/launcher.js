@@ -8,15 +8,29 @@ export class Launcher {
     this.onLaunch = onLaunch;
     this.projects = [];
     this.menuProjectPath = null;
+    this.openProjectPath = null;
     this.pinnedProjects = this.getPinnedProjects();
+    this.openTargets = [];
   }
 
   async load() {
     this.container.innerHTML = '<div class="launcher-loading">Loading projects…</div>';
     try {
-      const res = await fetch('/api/projects');
-      const data = await res.json();
+      const [projectsRes, openTargetsRes] = await Promise.all([
+        fetch('/api/projects'),
+        fetch('/api/open-targets').catch(() => null),
+      ]);
+      const data = await projectsRes.json();
       this.projects = data.projects || [];
+      if (openTargetsRes && openTargetsRes.ok) {
+        const openTargetsData = await openTargetsRes.json().catch(() => ({}));
+        this.openTargets = Array.isArray(openTargetsData.targets) ? openTargetsData.targets : [];
+      } else {
+        this.openTargets = [
+          { id: 'finder', label: 'Finder' },
+          { id: 'terminal', label: 'Terminal' },
+        ];
+      }
       this.render();
     } catch (e) {
       this.container.innerHTML = '<div class="launcher-loading">Failed to load projects</div>';
@@ -72,6 +86,14 @@ export class Launcher {
             ${p.active ? '<span class="launcher-bubble-dot"></span>' : ''}
           </button>
           <button class="launcher-menu-trigger" data-path="${this.escAttr(p.path)}" aria-label="Project actions" title="Project actions">⋯</button>
+          <button class="launcher-open-trigger" data-path="${this.escAttr(p.path)}" aria-label="Open workspace with app" title="Open workspace with app">⌄</button>
+          <div class="launcher-open-menu${this.openProjectPath === p.path ? ' open' : ''}">
+            ${this.openTargets.map((target) => `
+              <button class="launcher-menu-item" data-action="open-target" data-target="${this.escAttr(target.id)}" data-path="${this.escAttr(p.path)}">
+                ${this.escHtml(target.label)}
+              </button>
+            `).join('')}
+          </div>
           <div class="launcher-menu${this.menuProjectPath === p.path ? ' open' : ''}">
             <button class="launcher-menu-item" data-action="pin" data-path="${this.escAttr(p.path)}">
               ${isPinned ? 'Unpin project' : 'Pin project'}
@@ -114,6 +136,17 @@ export class Launcher {
         event.stopPropagation();
         const projectPath = btn.dataset.path;
         this.menuProjectPath = this.menuProjectPath === projectPath ? null : projectPath;
+        this.openProjectPath = null;
+        this.render();
+      });
+    });
+
+    this.container.querySelectorAll('.launcher-open-trigger').forEach(btn => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const projectPath = btn.dataset.path;
+        this.openProjectPath = this.openProjectPath === projectPath ? null : projectPath;
+        this.menuProjectPath = null;
         this.render();
       });
     });
@@ -123,14 +156,16 @@ export class Launcher {
         event.stopPropagation();
         const action = btn.dataset.action;
         const projectPath = btn.dataset.path;
-        await this.handleMenuAction(action, projectPath);
+        const openTarget = btn.dataset.target || null;
+        await this.handleMenuAction(action, projectPath, openTarget);
       });
     });
 
-    if (this.menuProjectPath) {
+    if (this.menuProjectPath || this.openProjectPath) {
       const closeMenu = (event) => {
         if (!event.target.closest('.launcher-bubble-shell')) {
           this.menuProjectPath = null;
+          this.openProjectPath = null;
           this.render();
         }
       };
@@ -169,7 +204,7 @@ export class Launcher {
     return data;
   }
 
-  async handleMenuAction(action, projectPath) {
+  async handleMenuAction(action, projectPath, openTarget = null) {
     if (!projectPath) return;
 
     switch (action) {
@@ -178,6 +213,7 @@ export class Launcher {
         else this.pinnedProjects.add(projectPath);
         this.persistPinnedProjects();
         this.menuProjectPath = null;
+        this.openProjectPath = null;
         this.render();
         return;
       }
@@ -190,6 +226,21 @@ export class Launcher {
           });
         } finally {
           this.menuProjectPath = null;
+          this.openProjectPath = null;
+          this.render();
+        }
+        return;
+      }
+      case 'open-target': {
+        try {
+          await fetch('/api/open', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath: projectPath, target: openTarget }),
+          });
+        } finally {
+          this.menuProjectPath = null;
+          this.openProjectPath = null;
           this.render();
         }
         return;
@@ -197,6 +248,7 @@ export class Launcher {
       case 'worktree': {
         window.alert('Create permanent worktree is coming soon.');
         this.menuProjectPath = null;
+        this.openProjectPath = null;
         this.render();
         return;
       }
@@ -220,6 +272,7 @@ export class Launcher {
     const newName = window.prompt('Rename project', oldName);
     if (!newName || newName.trim() === '' || newName.trim() === oldName) {
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       this.render();
       return;
     }
@@ -236,9 +289,11 @@ export class Launcher {
         this.persistPinnedProjects();
       }
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       await this.load();
     } catch (error) {
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       this.render();
       window.alert(error?.message || String(error));
     }
@@ -251,6 +306,7 @@ export class Launcher {
     );
     if (!confirmed) {
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       this.render();
       return;
     }
@@ -262,9 +318,11 @@ export class Launcher {
         'Failed to archive chats'
       );
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       await this.load();
     } catch (error) {
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       this.render();
       window.alert(error?.message || String(error));
     }
@@ -277,6 +335,7 @@ export class Launcher {
     );
     if (!confirmed) {
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       this.render();
       return;
     }
@@ -290,9 +349,11 @@ export class Launcher {
       this.pinnedProjects.delete(projectPath);
       this.persistPinnedProjects();
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       await this.load();
     } catch (error) {
       this.menuProjectPath = null;
+      this.openProjectPath = null;
       this.render();
       window.alert(error?.message || String(error));
     }
