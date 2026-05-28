@@ -968,8 +968,9 @@ export default function (pi: ExtensionAPI) {
     // Strip query params
     urlPath = urlPath.split("?")[0];
 
-    // Default to index.html
+    // Pretty routes
     if (urlPath === "/") urlPath = "/index.html";
+    if (urlPath === "/cost" || urlPath === "/cost/") urlPath = "/cost.html";
 
     const filePath = path.join(STATIC_DIR, urlPath);
 
@@ -1250,6 +1251,11 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     if (urlPath === "/api/sessions" && req.method === "GET") {
       serveSessionsList(res);
+      return;
+    }
+
+    if (urlPath.startsWith("/api/cost-dashboard") && req.method === "GET") {
+      serveCostDashboard(req, res);
       return;
     }
 
@@ -1644,6 +1650,304 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     } catch (e: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  function parseDateOnly(value: string): Date | null {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d;
+  }
+
+  function parseRangeParams(req: http.IncomingMessage) {
+    const reqUrl = req.url || "";
+    const parsed = new URL(reqUrl, "http://localhost");
+    const range = (parsed.searchParams.get("range") || "30d").toLowerCase();
+    const granularity = (parsed.searchParams.get("granularity") || "day").toLowerCase();
+    const scope = (parsed.searchParams.get("scope") || "current").toLowerCase();
+    const modelsParam = parsed.searchParams.get("models") || "";
+    const models = new Set(modelsParam.split(",").map((v) => v.trim()).filter(Boolean));
+
+    const now = new Date();
+    let from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    let to = now;
+
+    if (range === "7d") from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    else if (range === "90d") from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    else if (range === "custom") {
+      const fromParam = parsed.searchParams.get("from");
+      const toParam = parsed.searchParams.get("to");
+      const parsedFrom = fromParam ? parseDateOnly(fromParam) : null;
+      const parsedTo = toParam ? parseDateOnly(toParam) : null;
+      if (parsedFrom) from = parsedFrom;
+      if (parsedTo) to = parsedTo;
+    }
+
+    if (to < from) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
+
+    return {
+      from,
+      to,
+      range,
+      granularity: granularity === "week" || granularity === "month" ? granularity : "day",
+      scope: scope === "all" ? "all" : "current",
+      models,
+    };
+  }
+
+  function bucketForDate(date: Date, granularity: string): string {
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    if (granularity === "day") return `${year}-${month}-${day}`;
+    if (granularity === "month") return `${year}-${month}`;
+    const tmp = new Date(Date.UTC(year, date.getUTCMonth(), date.getUTCDate()));
+    const dayNum = tmp.getUTCDay() || 7;
+    tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
+    const weekYear = tmp.getUTCFullYear();
+    const yearStart = new Date(Date.UTC(weekYear, 0, 1));
+    const weekNo = Math.ceil((((tmp.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    return `${weekYear}-W${String(weekNo).padStart(2, "0")}`;
+  }
+
+  async function parseSessionMetrics(filePath: string, readline: any) {
+    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+    const data: any = {
+      id: "",
+      title: "",
+      cwd: "",
+      timestamp: null as Date | null,
+      lastActive: null as Date | null,
+      model: "unknown",
+      totalCost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      userMessages: 0,
+      assistantMessages: 0,
+      toolCalls: 0,
+      toolCostByName: {} as Record<string, number>,
+    };
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (!data.lastActive && entry.timestamp) {
+          const ts = parseDateOnly(entry.timestamp);
+          if (ts) data.lastActive = ts;
+        } else if (entry.timestamp) {
+          const ts = parseDateOnly(entry.timestamp);
+          if (ts) data.lastActive = ts;
+        }
+
+        if (entry.type === "session") {
+          data.id = entry.id || data.id;
+          data.cwd = entry.cwd || data.cwd;
+          if (entry.timestamp) {
+            const ts = parseDateOnly(entry.timestamp);
+            if (ts) data.timestamp = ts;
+          }
+          continue;
+        }
+
+        if (entry.type === "session_info" && entry.name) {
+          data.title = entry.name;
+          continue;
+        }
+
+        if (entry.type === "model_change" && entry.model) {
+          data.model = entry.model;
+          continue;
+        }
+
+        if (entry.type !== "message" || !entry.message) continue;
+        const msg = entry.message;
+        if (msg.role === "user") {
+          data.userMessages += 1;
+          continue;
+        }
+
+        if (msg.role !== "assistant") continue;
+        data.assistantMessages += 1;
+
+        if (typeof msg.model === "string" && msg.model) {
+          data.model = msg.model;
+        }
+
+        const usage = msg.usage || {};
+        const cost = Number(usage?.cost?.total || 0);
+        data.totalCost += cost;
+        data.inputTokens += Number(usage?.input || 0);
+        data.outputTokens += Number(usage?.output || 0);
+        data.cacheRead += Number(usage?.cacheRead || 0);
+        data.cacheWrite += Number(usage?.cacheWrite || 0);
+
+        const toolCalls = Array.isArray(msg.content)
+          ? msg.content.filter((b: any) => b?.type === "toolCall" && typeof b?.name === "string")
+          : [];
+        data.toolCalls += toolCalls.length;
+        if (toolCalls.length > 0 && cost > 0) {
+          const perToolCost = cost / toolCalls.length;
+          for (const toolCall of toolCalls) {
+            data.toolCostByName[toolCall.name] = (data.toolCostByName[toolCall.name] || 0) + perToolCost;
+          }
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+
+    rl.close();
+    stream.destroy();
+
+    if (!data.id) return null;
+    if (!data.lastActive) {
+      const stat = fs.statSync(filePath);
+      data.lastActive = new Date(stat.mtimeMs);
+    }
+    if (!data.timestamp) data.timestamp = data.lastActive;
+    return data;
+  }
+
+  async function serveCostDashboard(req: http.IncomingMessage, res: http.ServerResponse) {
+    try {
+      if (!fs.existsSync(SESSIONS_DIR)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          range: {},
+          summary: { totalCost: 0, totalTokens: 0, sessionCount: 0, userMessageCount: 0 },
+          series: [],
+          breakdown: { byModel: [], byTool: [] },
+          sessions: [],
+          topSessions: [],
+        }));
+        return;
+      }
+
+      const readline = await import("node:readline");
+      const params = parseRangeParams(req);
+      const currentWorkspace = (() => {
+        try {
+          return fs.realpathSync(process.cwd());
+        } catch {
+          return path.resolve(process.cwd());
+        }
+      })();
+
+      const dirEntries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
+      const sessions: any[] = [];
+
+      for (const dir of dirEntries) {
+        if (!dir.isDirectory()) continue;
+        const projectDir = path.join(SESSIONS_DIR, dir.name);
+        const files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
+        for (const file of files) {
+          const filePath = path.join(projectDir, file);
+          const parsed = await parseSessionMetrics(filePath, readline);
+          if (!parsed) continue;
+
+          const sessionCwdResolved = (() => {
+            try {
+              return parsed.cwd ? fs.realpathSync(parsed.cwd) : "";
+            } catch {
+              return parsed.cwd ? path.resolve(parsed.cwd) : "";
+            }
+          })();
+          if (params.scope === "current" && sessionCwdResolved && sessionCwdResolved !== currentWorkspace) continue;
+          if (params.models.size > 0 && !params.models.has(parsed.model)) continue;
+
+          const time = parsed.lastActive || parsed.timestamp;
+          if (!time || time < params.from || time > params.to) continue;
+
+          sessions.push({
+            id: parsed.id,
+            title: parsed.title || "Untitled",
+            workspace: parsed.cwd || "",
+            model: parsed.model || "unknown",
+            time: time.toISOString(),
+            totalCost: parsed.totalCost,
+            inputTokens: parsed.inputTokens,
+            outputTokens: parsed.outputTokens,
+            totalTokens: parsed.inputTokens + parsed.outputTokens + parsed.cacheRead,
+            toolCalls: parsed.toolCalls,
+            userMessages: parsed.userMessages,
+            costPerUserMessage: parsed.userMessages > 0 ? parsed.totalCost / parsed.userMessages : parsed.totalCost,
+            toolCostByName: parsed.toolCostByName || {},
+          });
+        }
+      }
+
+      sessions.sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+
+      const summary = {
+        totalCost: 0,
+        totalTokens: 0,
+        sessionCount: sessions.length,
+        userMessageCount: 0,
+        avgCostPerSession: 0,
+        avgCostPerUserMessage: 0,
+      };
+      const byModel = new Map<string, number>();
+      const byTool = new Map<string, number>();
+      const byBucket = new Map<string, { cost: number; tokens: number }>();
+
+      for (const s of sessions) {
+        summary.totalCost += s.totalCost;
+        summary.totalTokens += s.totalTokens;
+        summary.userMessageCount += s.userMessages;
+        byModel.set(s.model, (byModel.get(s.model) || 0) + s.totalCost);
+        for (const [toolName, toolCost] of Object.entries(s.toolCostByName || {})) {
+          byTool.set(toolName, (byTool.get(toolName) || 0) + Number(toolCost || 0));
+        }
+        const bucket = bucketForDate(new Date(s.time), params.granularity);
+        const current = byBucket.get(bucket) || { cost: 0, tokens: 0 };
+        current.cost += s.totalCost;
+        current.tokens += s.totalTokens;
+        byBucket.set(bucket, current);
+      }
+
+      summary.avgCostPerSession = summary.sessionCount > 0 ? summary.totalCost / summary.sessionCount : 0;
+      summary.avgCostPerUserMessage = summary.userMessageCount > 0 ? summary.totalCost / summary.userMessageCount : 0;
+
+      const series = Array.from(byBucket.entries())
+        .map(([bucket, value]) => ({ bucket, cost: value.cost, tokens: value.tokens }))
+        .sort((a, b) => a.bucket.localeCompare(b.bucket));
+
+      const topSessions = [...sessions].sort((a, b) => b.totalCost - a.totalCost).slice(0, 20);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        range: {
+          from: params.from.toISOString(),
+          to: params.to.toISOString(),
+          granularity: params.granularity,
+          scope: params.scope,
+          range: params.range,
+        },
+        summary,
+        series,
+        breakdown: {
+          byModel: Array.from(byModel.entries())
+            .map(([name, cost]) => ({ name, cost }))
+            .sort((a, b) => b.cost - a.cost),
+          byTool: Array.from(byTool.entries())
+            .map(([name, cost]) => ({ name, cost }))
+            .sort((a, b) => b.cost - a.cost),
+        },
+        topSessions,
+        sessions,
+      }));
+    } catch (e: any) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e?.message || "Failed to build cost dashboard" }));
     }
   }
 

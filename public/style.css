@@ -1431,41 +1431,95 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════
-   Settings — glass sheet
+   Settings — full page workspace
    ═══════════════════════════════════════════════════════ */
 
-.settings-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
+.settings-overlay { display: none; }
 .settings-overlay.hidden { display: none; }
 
 .settings-panel {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: var(--bg-frosted);
-  backdrop-filter: blur(var(--blur-heavy)) saturate(1.6);
-  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.6);
-  border: 1px solid var(--border-hover);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-  z-index: 1001;
-  width: 300px;
-  max-width: 90vw;
-  box-shadow: var(--shadow-lg), var(--shadow-inset);
-  animation: sheetIn 0.3s var(--ease);
+  position: absolute;
+  inset: 0;
+  z-index: 260;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  background: var(--bg-solid);
 }
 
-@keyframes sheetIn {
-  from { opacity: 0; transform: translate(-50%, -48%) scale(0.94); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.settings-panel.hidden { display: none; }
+
+.settings-nav {
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-glass) 70%, transparent);
+  padding: 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-nav-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  padding: 0 8px;
+}
+
+.settings-nav-item,
+.settings-nav-back {
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.settings-nav-item:hover,
+.settings-nav-back:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-subtle);
+  border-color: var(--border);
+  color: var(--accent-text);
+}
+
+.settings-nav-back {
+  margin-top: auto;
+}
+
+.settings-content {
+  padding: 24px 28px;
+  overflow-y: auto;
+}
+
+.settings-tab { display: none; }
+.settings-tab.active { display: block; }
+
+.settings-usage-embed {
+  height: calc(100dvh - 140px);
+  min-height: 460px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-glass);
+}
+
+.settings-usage-iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg-solid);
+}
+
+.settings-usage-hidden-metrics {
+  display: none;
 }
 
 .settings-header {
@@ -1516,6 +1570,29 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 6px 0;
+}
+
+.settings-row-usage {
+  position: relative;
+}
+
+.settings-config-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.settings-config-textarea {
+  min-height: 320px;
+  margin-bottom: 10px;
+}
+
+.settings-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .settings-label {
@@ -1603,6 +1680,11 @@ body {
 }
 
 .settings-input::placeholder { color: var(--text-dim); }
+
+@keyframes sheetIn {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.94); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
 
 /* ═══════════════════════════════════════════════════════
    Config Editor Modal

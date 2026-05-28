@@ -57,22 +57,21 @@
           <button class="thinking-tag" id="thinking-btn" title="Cycle thinking level">off</button>
         </div>
         <div class="header-right">
-          <div class="pill session-cost" id="session-cost" title="Session cost"></div>
-          <div style="position: relative;">
-            <div class="pill token-usage" id="token-usage" title="Click for context breakdown"></div>
-            <div class="context-viz hidden" id="context-viz">
-              <div class="context-viz-title">Context Window</div>
-              <div class="context-bar" id="context-bar"></div>
-              <div class="context-legend" id="context-legend"></div>
-              <div class="context-viz-footer">
-                <span id="context-viz-used"></span>
-                <span id="context-viz-total"></span>
-              </div>
-            </div>
-          </div>
+          <span class="pill session-cost" id="session-cost" title="Session cost"></span>
+          <span class="pill token-usage" id="token-usage" title="Context usage"></span>
           <div class="status">
             <span class="status-indicator" id="status-indicator"></span>
             <span class="status-text" id="status-text">Connecting...</span>
+          </div>
+         
+          <div class="context-viz hidden" id="context-viz">
+            <div class="context-viz-title">Context Window</div>
+            <div class="context-bar" id="context-bar"></div>
+            <div class="context-legend" id="context-legend"></div>
+            <div class="context-viz-footer">
+              <span id="context-viz-used"></span>
+              <span id="context-viz-total"></span>
+            </div>
           </div>
           <button class="icon-btn" id="file-sidebar-toggle" title="Files" aria-label="Toggle file browser">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
@@ -163,57 +162,104 @@
     </div>
   </div>
 
-  <!-- Settings Overlay -->
   <div class="settings-overlay hidden" id="settings-overlay"></div>
 
-  <!-- Settings Panel -->
   <div class="settings-panel hidden" id="settings-panel">
-    <div class="settings-header">
-      <h3>Settings</h3>
-      <button class="settings-close" id="settings-close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    </div>
-    <div class="settings-body">
-      <div class="settings-section">
-        <div class="settings-section-title">Appearance</div>
-        <div class="theme-grid" id="theme-grid"></div>
-      </div>
-      <div class="settings-section">
-        <div class="settings-section-title">Agent</div>
-        <div class="settings-row" id="setting-auto-compact">
-          <span class="settings-label">Auto-compaction</span>
-          <button class="settings-toggle" id="toggle-auto-compact"></button>
+    <aside class="settings-nav">
+      <div class="settings-nav-title">Settings</div>
+      <button class="settings-nav-item active" data-settings-tab="general">General</button>
+      <button class="settings-nav-item" data-settings-tab="appearance">Appearance</button>
+      <button class="settings-nav-item" data-settings-tab="display">Display</button>
+      <button class="settings-nav-item" data-settings-tab="usage">Usage</button>
+      <button class="settings-nav-item" data-settings-tab="auth">Authentication</button>
+      <button class="settings-nav-item" data-settings-tab="configuration">Configuration</button>
+      <button class="settings-nav-back" id="settings-close">Back to chat</button>
+    </aside>
+    <section class="settings-content">
+      <div class="settings-tab active" data-settings-panel="general">
+        <div class="settings-header">
+          <h3>General</h3>
         </div>
-        <div class="settings-row" id="setting-thinking">
-          <span class="settings-label">Thinking level</span>
-          <button class="settings-value-btn" id="btn-thinking-level"></button>
-        </div>
-        <div class="settings-row" id="setting-pi-version">
-          <span class="settings-label">Pi version</span>
-          <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
-        </div>
-      </div>
-      <div class="settings-section">
-        <div class="settings-section-title">Display</div>
-        <div class="settings-row">
-          <span class="settings-label">Show thinking</span>
-          <button class="settings-toggle on" id="toggle-show-thinking"></button>
-        </div>
-      </div>
-      <div class="settings-section" id="settings-auth-section" style="display:none">
-        <div class="settings-section-title">Authentication</div>
-        <div class="settings-row">
-          <span class="settings-label">Require login</span>
-          <button class="settings-toggle" id="toggle-auth"></button>
+        <div class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-title">Agent</div>
+            <div class="settings-row" id="setting-auto-compact">
+              <span class="settings-label">Auto-compaction</span>
+              <button class="settings-toggle" id="toggle-auto-compact"></button>
+            </div>
+            <div class="settings-row" id="setting-thinking">
+              <span class="settings-label">Thinking level</span>
+              <button class="settings-value-btn" id="btn-thinking-level"></button>
+            </div>
+            <div class="settings-row" id="setting-pi-version">
+              <span class="settings-label">Pi version</span>
+              <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="settings-section">
-        <div class="settings-section-title">Configuration</div>
-        <div class="settings-row">
-          <span class="settings-label">Agent config file</span>
-          <button class="settings-value-btn" id="btn-open-config">Edit</button>
+
+      <div class="settings-tab" data-settings-panel="appearance">
+        <div class="settings-header"><h3>Appearance</h3></div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-title">Theme</div>
+            <div class="theme-grid" id="theme-grid"></div>
+          </div>
         </div>
       </div>
-    </div>
+
+      <div class="settings-tab" data-settings-panel="display">
+        <div class="settings-header"><h3>Display</h3></div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-title">Messages</div>
+            <div class="settings-row">
+              <span class="settings-label">Show thinking</span>
+              <button class="settings-toggle on" id="toggle-show-thinking"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-tab" data-settings-panel="usage">
+        <div class="settings-header"><h3>Usage</h3></div>
+        <div class="settings-usage-embed">
+          <iframe src="/cost" title="Cost Dashboard" class="settings-usage-iframe" scrolling="yes"></iframe>
+        </div>
+      </div>
+
+      <div class="settings-tab" data-settings-panel="auth" id="settings-auth-section" style="display:none">
+        <div class="settings-header"><h3>Authentication</h3></div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-title">Protection</div>
+            <div class="settings-row">
+              <span class="settings-label">Require login</span>
+              <button class="settings-toggle" id="toggle-auth"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-tab" data-settings-panel="configuration">
+        <div class="settings-header"><h3>Configuration</h3></div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-title">Agent</div>
+            <div class="settings-config-meta">
+              <span class="settings-label">Agent config file</span>
+              <span class="settings-static-value" id="inline-config-path"></span>
+            </div>
+            <textarea class="config-editor-textarea settings-config-textarea" id="inline-config-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+            <div class="settings-config-actions">
+              <div class="config-editor-error hidden" id="inline-config-error"></div>
+              <button class="btn-primary" id="inline-config-save">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- Agent Config Editor Modal -->

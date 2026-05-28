@@ -1665,6 +1665,8 @@ const settingsBtn = document.getElementById('settings-btn');
 const settingsPanel = document.getElementById('settings-panel');
 const settingsOverlay = document.getElementById('settings-overlay');
 const settingsClose = document.getElementById('settings-close');
+const settingsNavItems = Array.from(document.querySelectorAll('.settings-nav-item'));
+const settingsTabs = Array.from(document.querySelectorAll('.settings-tab'));
 const themeGrid = document.getElementById('theme-grid');
 
 
@@ -1674,6 +1676,18 @@ const toggleShowThinking = document.getElementById('toggle-show-thinking');
 const piVersionValue = document.getElementById('setting-pi-version-value');
 let piVersionCache = null;
 let piVersionInflight = null;
+
+function selectSettingsTab(tabKey = 'general') {
+  settingsNavItems.forEach((item) => {
+    item.classList.toggle('active', item.dataset.settingsTab === tabKey);
+  });
+  settingsTabs.forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.settingsPanel === tabKey);
+  });
+  if (tabKey === 'configuration') {
+    loadInlineConfigEditor();
+  }
+}
 
 function formatPiVersionError(err, fallback = 'unknown error') {
   const raw = String(err?.message || err?.error || err || fallback).trim();
@@ -1743,9 +1757,13 @@ function buildThemeGrid() {
 }
 
 async function openSettings() {
-  buildThemeGrid();
+  hideLauncher();
   settingsPanel.classList.remove('hidden');
-  settingsOverlay.classList.remove('hidden');
+  messagesContainer.style.display = 'none';
+  document.querySelector('.input-area').style.display = 'none';
+  document.querySelector('.mode-link:first-child')?.classList.remove('active');
+  selectSettingsTab('general');
+  buildThemeGrid();
   if (piVersionValue) {
     piVersionValue.textContent = piVersionCache || 'Loading...';
   }
@@ -1792,12 +1810,19 @@ async function openSettings() {
 
 function closeSettings() {
   settingsPanel.classList.add('hidden');
-  settingsOverlay.classList.add('hidden');
+  messagesContainer.style.display = '';
+  document.querySelector('.input-area').style.display = '';
+  document.querySelector('.mode-link:first-child')?.classList.add('active');
 }
 
 settingsBtn.addEventListener('click', openSettings);
 settingsClose.addEventListener('click', closeSettings);
-settingsOverlay.addEventListener('click', closeSettings);
+settingsOverlay?.addEventListener('click', closeSettings);
+settingsNavItems.forEach((item) => {
+  item.addEventListener('click', () => {
+    selectSettingsTab(item.dataset.settingsTab || 'general');
+  });
+});
 
 // Auto-compaction toggle
 toggleAutoCompact.addEventListener('click', async () => {
@@ -1849,6 +1874,10 @@ toggleAuth.addEventListener('click', async () => {
 // ═══════════════════════════════════════
 
 const btnOpenConfig = document.getElementById('btn-open-config');
+const inlineConfigPath = document.getElementById('inline-config-path');
+const inlineConfigTextarea = document.getElementById('inline-config-textarea');
+const inlineConfigError = document.getElementById('inline-config-error');
+const inlineConfigSave = document.getElementById('inline-config-save');
 const configEditorOverlay = document.getElementById('config-editor-overlay');
 const configEditorModal = document.getElementById('config-editor-modal');
 const configEditorClose = document.getElementById('config-editor-close');
@@ -1892,9 +1921,69 @@ function showConfigError(msg) {
   configEditorError.classList.remove('hidden');
 }
 
-btnOpenConfig.addEventListener('click', () => {
+async function loadInlineConfigEditor() {
+  if (!inlineConfigTextarea) return;
+  inlineConfigError?.classList.add('hidden');
+  inlineConfigTextarea.value = '';
+  if (inlineConfigPath) inlineConfigPath.textContent = 'Loading...';
+  try {
+    const resp = await fetch('/api/agent-config');
+    const data = await resp.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to load config');
+    }
+    try {
+      inlineConfigTextarea.value = JSON.stringify(JSON.parse(data.content), null, 2);
+    } catch {
+      inlineConfigTextarea.value = data.content;
+    }
+    if (inlineConfigPath) inlineConfigPath.textContent = data.path || '';
+  } catch (e) {
+    if (inlineConfigPath) inlineConfigPath.textContent = '';
+    if (inlineConfigError) {
+      inlineConfigError.textContent = e.message || String(e);
+      inlineConfigError.classList.remove('hidden');
+    }
+  }
+}
+
+btnOpenConfig?.addEventListener('click', () => {
   closeSettings();
   openConfigEditor();
+});
+
+inlineConfigSave?.addEventListener('click', async () => {
+  if (!inlineConfigTextarea) return;
+  inlineConfigError?.classList.add('hidden');
+  const content = inlineConfigTextarea.value;
+  try {
+    JSON.parse(content);
+  } catch (e) {
+    if (inlineConfigError) {
+      inlineConfigError.textContent = `Invalid JSON: ${e.message}`;
+      inlineConfigError.classList.remove('hidden');
+    }
+    return;
+  }
+  inlineConfigSave.disabled = true;
+  try {
+    const resp = await fetch('/api/agent-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to save config');
+    }
+  } catch (e) {
+    if (inlineConfigError) {
+      inlineConfigError.textContent = e.message || String(e);
+      inlineConfigError.classList.remove('hidden');
+    }
+  } finally {
+    inlineConfigSave.disabled = false;
+  }
 });
 
 configEditorClose.addEventListener('click', closeConfigEditor);
@@ -2108,17 +2197,11 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 // Initialize
 // ═══════════════════════════════════════
 
-// On mobile, move cost + token usage above input
+// On mobile, collapse model bar above input
 if (isMobile()) {
   sidebarEl.classList.add('collapsed');
 
   const mobileBar = document.getElementById('mobile-model-bar');
-  const sessionCost = document.getElementById('session-cost');
-  const tokenUsage = document.getElementById('token-usage');
-  if (mobileBar && sessionCost && tokenUsage) {
-    mobileBar.appendChild(sessionCost);
-    mobileBar.appendChild(tokenUsage);
-  }
 
   // Start collapsed
   mobileBar.classList.add('collapsed');
@@ -2183,6 +2266,7 @@ function addLauncherNav() {
 }
 
 function showLauncher() {
+  settingsPanel.classList.add('hidden');
   launcherEl.classList.remove('hidden');
   messagesContainer.style.display = 'none';
   document.querySelector('.input-area').style.display = 'none';
@@ -2197,8 +2281,10 @@ function showLauncher() {
 
 function hideLauncher() {
   launcherEl.classList.add('hidden');
-  messagesContainer.style.display = '';
-  document.querySelector('.input-area').style.display = '';
+  if (settingsPanel.classList.contains('hidden')) {
+    messagesContainer.style.display = '';
+    document.querySelector('.input-area').style.display = '';
+  }
 
   // Update nav state
   document.querySelectorAll('.mode-link').forEach(l => l.classList.remove('active'));
@@ -2207,6 +2293,7 @@ function hideLauncher() {
 
 // Make the Pi Studio icon in sidebar switch back to chat
 document.querySelector('.mode-link:first-child')?.addEventListener('click', () => {
+  closeSettings();
   hideLauncher();
 });
 

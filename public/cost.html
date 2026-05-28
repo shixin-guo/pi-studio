@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pi Studio - Cost Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="cost.css">
+</head>
+<body>
+  <div class="cost-page">
+    <section class="cost-filters">
+      <label>
+        <span>Range</span>
+        <select id="range-select">
+          <option value="7d">Last 7 days</option>
+          <option value="30d" selected>Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
+      <label>
+        <span>From</span>
+        <input type="date" id="from-date" />
+      </label>
+      <label>
+        <span>To</span>
+        <input type="date" id="to-date" />
+      </label>
+      <label>
+        <span>Granularity</span>
+        <select id="granularity-select">
+          <option value="day" selected>Day</option>
+          <option value="week">Week</option>
+          <option value="month">Month</option>
+        </select>
+      </label>
+      <label>
+        <span>Workspace</span>
+        <select id="scope-select">
+          <option value="current" selected>Current</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <div class="filter-actions">
+        <button id="apply-filters-btn">Apply</button>
+        <button id="reset-filters-btn" class="ghost">Reset</button>
+      </div>
+    </section>
+
+    <section class="kpi-grid" id="kpi-grid">
+      <article class="kpi-card"><h3>Total Cost</h3><p id="kpi-total-cost">$0.00</p></article>
+      <article class="kpi-card"><h3>Total Tokens</h3><p id="kpi-total-tokens">0</p></article>
+      <article class="kpi-card"><h3>Avg Cost / Session</h3><p id="kpi-cost-session">$0.00</p></article>
+      <article class="kpi-card"><h3>Avg Cost / Message</h3><p id="kpi-cost-message">$0.00</p></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Cost Trend</h2>
+      </div>
+      <div id="trend-empty" class="empty hidden">No data in selected range.</div>
+      <div id="trend-bars" class="trend-bars"></div>
+    </section>
+
+    <section class="panel split">
+      <div>
+        <h2>By Model</h2>
+        <div id="model-breakdown" class="breakdown-list"></div>
+      </div>
+      <div>
+        <h2>By Tool (Estimated)</h2>
+        <div id="tool-breakdown" class="breakdown-list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Top Expensive Sessions</h2>
+      </div>
+      <div id="top-sessions" class="table-wrap"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>All Sessions</h2>
+      </div>
+      <div id="all-sessions" class="table-wrap"></div>
+    </section>
+  </div>
+  <script type="module" src="cost.js"></script>
+</body>
+</html>
