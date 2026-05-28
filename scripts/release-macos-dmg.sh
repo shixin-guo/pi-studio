@@ -39,21 +39,12 @@ fi
 
 SIGN_INFO="$(codesign -dvv "$APP_PATH" 2>&1 || true)"
 
-if printf '%s' "$SIGN_INFO" | rg -qi 'adhoc|ad-hoc|Authority=Ad Hoc Signature'; then
-  echo "ERROR: ad-hoc signature detected. Refusing release artifact."
-  exit 1
-fi
-
 if codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null 2>&1; then
   echo "Code signature integrity: OK"
 else
-  if printf '%s' "$SIGN_INFO" | rg -qi 'code object is not signed at all'; then
-    echo "Bundle is unsigned (expected for non-Developer ID release)."
-  else
-    echo "ERROR: signature appears broken."
-    echo "$SIGN_INFO"
-    exit 1
-  fi
+  echo "ERROR: signature appears broken or incomplete."
+  echo "$SIGN_INFO"
+  exit 1
 fi
 
 SPCTL_OUTPUT="$(spctl -a -vv "$APP_PATH" 2>&1 || true)"

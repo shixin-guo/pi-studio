@@ -45,13 +45,13 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   exit 1
 fi
 
-if git ls-remote --tags origin "refs/tags/$TAG" | rg -q "$TAG$"; then
+if [[ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]]; then
   echo "Tag already exists on origin: $TAG"
   exit 1
 fi
 
 echo "Updating versions to $VERSION..."
-node <<'EOF' "$VERSION"
+node - "$VERSION" <<'EOF'
 const fs = require("fs");
 const path = require("path");
 

@@ -21,6 +21,7 @@
     "active": true,
     "targets": "all",
     "macOS": {
+      "signingIdentity": "-",
       "entitlements": "./entitlements.plist",
       "infoPlist": "./Info.plist"
     },
