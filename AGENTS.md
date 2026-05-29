@@ -122,6 +122,16 @@ bash scripts/check-rust.sh
 - When upgrading Tauri or its plugins, run the script first to surface any
   deprecation warnings before touching feature code.
 
+## Auto-updater
+
+Pi Studio uses the Tauri v2 updater plugin to fetch new releases from
+GitHub. The runtime side lives in `public/tauri-bridge.js` +
+`public/app.js` (Settings → General → Updates), and the build side is
+wired into `.github/workflows/release.yml` via the
+`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+secrets. See `docs/AUTO_UPDATER.md` for the one-time signing-key setup
+and how `latest.json` flows from CI → GitHub release → installed app.
+
 ## Note on `.pi/AGENTS.md`
 
 `./.pi/AGENTS.md` is the **runtime** spec file read by the pi coding agent

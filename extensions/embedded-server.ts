@@ -12,7 +12,8 @@
  *   pi extension API (sendUserMessage, abort, set_model, etc.)
  * - Expose REST endpoints the frontend queries directly:
  *   `/api/sessions`, `/api/projects`, `/api/cost-dashboard`, `/api/files`,
- *   `/api/search`, `/api/open`, `/api/agent-config`, `/api/instances`
+ *   `/api/search`, `/api/open`, `/api/agent-config`, `/api/models-config`,
+ *   `/api/instances`
  * - Forward all pi lifecycle events to connected browsers
  * - Generate session titles from user messages
  *
@@ -1561,6 +1562,85 @@ export default function (pi: ExtensionAPI) {
           fs.writeFileSync(configPath, content, "utf8");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true }));
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      });
+      return;
+    }
+
+    // LLM providers / models.json read/write
+    //
+    // Exposes ~/.pi/agent/models.json — the file pi uses to declare custom
+    // providers and models (Ollama, vLLM, LM Studio, OpenAI-compat proxies,
+    // OpenRouter routing overrides, etc). See docs/models.md in the embedded
+    // pi runtime for the schema. The frontend Settings → Configuration →
+    // "LLM providers" panel reads and writes through these endpoints so users
+    // never have to leave Pi Studio to edit the file by hand.
+    //
+    // After a successful save we call modelRegistry.refresh() so the new
+    // providers/models show up in the model picker immediately — matching the
+    // pi behaviour where /model rereads models.json on each invocation.
+    if (urlPath === "/api/models-config" && req.method === "GET") {
+      try {
+        const configPath = path.join(process.env.HOME || "~", ".pi", "agent", "models.json");
+        const content = fs.existsSync(configPath)
+          ? fs.readFileSync(configPath, "utf8")
+          : '{\n  "providers": {}\n}\n';
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, content, path: configPath }));
+      } catch (e: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/models-config" && req.method === "PUT") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { content } = JSON.parse(body);
+          if (typeof content !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: false, error: "content must be a string" }));
+            return;
+          }
+          // Validate as JSON before saving.
+          const parsed = JSON.parse(content);
+          // Light schema sanity check — pi itself does the real validation
+          // on reload, but reject the obviously wrong shape early so users
+          // get a clear error instead of a silently broken models.json.
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            if ("providers" in parsed && (typeof parsed.providers !== "object" || Array.isArray(parsed.providers))) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ success: false, error: "'providers' must be an object" }));
+              return;
+            }
+          } else {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: false, error: "models.json must be a JSON object" }));
+            return;
+          }
+          const configPath = path.join(process.env.HOME || "~", ".pi", "agent", "models.json");
+          fs.mkdirSync(path.dirname(configPath), { recursive: true });
+          fs.writeFileSync(configPath, content, "utf8");
+          // Reload pi's in-memory model registry so the picker sees the new
+          // providers/models without restarting the workspace.
+          let refreshed = false;
+          try {
+            const registry = globalState.modelRegistry;
+            if (registry && typeof (registry as any).refresh === "function") {
+              (registry as any).refresh();
+              refreshed = true;
+            }
+          } catch {
+            // Non-fatal: file is saved, user can /reload or restart.
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, refreshed }));
         } catch (e: any) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: false, error: e.message }));

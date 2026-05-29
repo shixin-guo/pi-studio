@@ -1709,6 +1709,7 @@ function selectSettingsTab(tabKey = 'general') {
   });
   if (tabKey === 'configuration') {
     loadInlineConfigEditor();
+    loadInlineModelsEditor();
   }
   if (tabKey === 'auth') {
     loadApiKeysPanel();
@@ -1761,6 +1762,207 @@ async function loadPiVersion() {
   })();
 }
 
+
+// ═══════════════════════════════════════
+// Auto-updater (Tauri-only)
+// ═══════════════════════════════════════
+
+const appVersionValue = document.getElementById('setting-app-version-value');
+const updaterSection = document.getElementById('setting-updater-section');
+const checkUpdatesBtn = document.getElementById('btn-check-updates');
+const updateStatusRow = document.getElementById('setting-update-status-row');
+const updateStatusEl = document.getElementById('setting-update-status');
+const updateInstallRow = document.getElementById('setting-update-install-row');
+const updateInstallLabel = document.getElementById('setting-update-install-label');
+const installUpdateBtn = document.getElementById('btn-install-update');
+
+const APP_VERSION = (() => {
+  const meta = document.querySelector('meta[name="app-version"]');
+  return meta?.content?.trim() || null;
+})();
+
+let pendingUpdate = null;
+let updaterBusy = false;
+
+function setUpdateStatus(message, tone = 'info') {
+  if (!updateStatusRow || !updateStatusEl) return;
+  if (!message) {
+    updateStatusRow.hidden = true;
+    updateStatusEl.textContent = '';
+    updateStatusEl.dataset.tone = '';
+    return;
+  }
+  updateStatusRow.hidden = false;
+  updateStatusEl.textContent = message;
+  updateStatusEl.dataset.tone = tone;
+}
+
+function showInstallButton(update) {
+  if (!updateInstallRow || !updateInstallLabel || !installUpdateBtn) return;
+  if (!update) {
+    updateInstallRow.hidden = true;
+    return;
+  }
+  updateInstallRow.hidden = false;
+  const from = update.currentVersion ? ` (from ${update.currentVersion})` : '';
+  updateInstallLabel.textContent = `Pi Studio ${update.version}${from}`;
+  installUpdateBtn.disabled = false;
+  installUpdateBtn.textContent = 'Download & install';
+}
+
+async function loadAppVersion() {
+  if (!appVersionValue) return;
+
+  if (APP_VERSION) {
+    appVersionValue.textContent = APP_VERSION;
+    return;
+  }
+
+  try {
+    if (window.tauriNative?.getAppVersion) {
+      const v = await window.tauriNative.getAppVersion();
+      if (v) {
+        appVersionValue.textContent = v;
+        return;
+      }
+    }
+    const tauriApp = window.__TAURI__?.app;
+    if (tauriApp?.getVersion) {
+      const v = await tauriApp.getVersion();
+      appVersionValue.textContent = v || 'unknown';
+      return;
+    }
+  } catch (err) {
+    console.warn('[updater] unable to read app version:', err);
+  }
+  appVersionValue.textContent = 'unknown';
+}
+
+async function checkForUpdates({ silent = false } = {}) {
+  if (updaterBusy) return null;
+
+  if (!window.tauriNative?.hasUpdater) {
+    if (!silent) setUpdateStatus('Auto-updates are only available in the desktop app.', 'warn');
+    if (updaterSection && !window.tauriNative) updaterSection.hidden = true;
+    return null;
+  }
+
+  updaterBusy = true;
+  if (checkUpdatesBtn) {
+    checkUpdatesBtn.disabled = true;
+    checkUpdatesBtn.textContent = 'Checking...';
+  }
+  if (!silent) setUpdateStatus('Checking for updates...', 'info');
+
+  try {
+    const update = await window.tauriNative.checkForUpdate();
+    if (!update) {
+      pendingUpdate = null;
+      showInstallButton(null);
+      setUpdateStatus("You're on the latest version.", 'ok');
+      return null;
+    }
+
+    pendingUpdate = update;
+    showInstallButton(update);
+    setUpdateStatus(`Update available: ${update.version}`, 'ok');
+    return update;
+  } catch (err) {
+    const msg = String(err?.message || err || 'unknown error');
+    console.error('[updater] check failed:', err);
+    if (!silent) {
+      setUpdateStatus(`Update check failed: ${msg}`, 'error');
+    }
+    return null;
+  } finally {
+    updaterBusy = false;
+    if (checkUpdatesBtn) {
+      checkUpdatesBtn.disabled = false;
+      checkUpdatesBtn.textContent = 'Check now';
+    }
+  }
+}
+
+async function installPendingUpdate() {
+  if (updaterBusy || !pendingUpdate) return;
+  if (!window.tauriNative?.downloadAndInstallUpdate) return;
+
+  updaterBusy = true;
+  if (installUpdateBtn) {
+    installUpdateBtn.disabled = true;
+    installUpdateBtn.textContent = 'Downloading...';
+  }
+  if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
+
+  try {
+    await window.tauriNative.downloadAndInstallUpdate((evt) => {
+      if (evt.phase === 'started') {
+        setUpdateStatus(
+          evt.contentLength ? `Downloading ${(evt.contentLength / 1_048_576).toFixed(1)} MB...` : 'Downloading...',
+          'info',
+        );
+      } else if (evt.phase === 'progress' && evt.contentLength) {
+        const pct = Math.min(100, Math.round((evt.downloaded / evt.contentLength) * 100));
+        if (installUpdateBtn) installUpdateBtn.textContent = `Downloading ${pct}%`;
+      } else if (evt.phase === 'finished') {
+        if (installUpdateBtn) installUpdateBtn.textContent = 'Installing...';
+        setUpdateStatus('Installing...', 'info');
+      }
+    });
+
+    setUpdateStatus('Update installed. Restarting...', 'ok');
+    setTimeout(() => {
+      window.tauriNative?.relaunchApp?.().catch((err) => {
+        console.error('[updater] relaunch failed:', err);
+        setUpdateStatus('Please restart Pi Studio to finish updating.', 'warn');
+      });
+    }, 600);
+  } catch (err) {
+    const msg = String(err?.message || err || 'unknown error');
+    console.error('[updater] install failed:', err);
+    setUpdateStatus(`Update failed: ${msg}`, 'error');
+    if (installUpdateBtn) {
+      installUpdateBtn.disabled = false;
+      installUpdateBtn.textContent = 'Retry';
+    }
+  } finally {
+    updaterBusy = false;
+    if (checkUpdatesBtn) checkUpdatesBtn.disabled = false;
+  }
+}
+
+function initUpdaterUI() {
+  if (!updaterSection) return;
+
+  if (!window.tauriNative?.hasUpdater) {
+    updaterSection.hidden = true;
+    return;
+  }
+
+  loadAppVersion();
+
+  checkUpdatesBtn?.addEventListener('click', () => {
+    checkForUpdates({ silent: false });
+  });
+  installUpdateBtn?.addEventListener('click', () => {
+    installPendingUpdate();
+  });
+
+  // Background check on startup (silent — only surfaces a status row if an
+  // update is available or the user opens settings to retry).
+  setTimeout(() => {
+    checkForUpdates({ silent: true }).catch(() => {});
+  }, 5_000);
+
+  // Periodic check every 6 hours while the app is running.
+  setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      checkForUpdates({ silent: true }).catch(() => {});
+    }
+  }, 6 * 60 * 60 * 1000);
+}
+
+initUpdaterUI();
 
 function buildThemeGrid() {
   themeGrid.innerHTML = '';
@@ -2227,6 +2429,149 @@ configEditorSave.addEventListener('click', async () => {
   } finally {
     configEditorSave.disabled = false;
   }
+});
+
+// ═══════════════════════════════════════
+// LLM Providers (models.json) Editor
+// ═══════════════════════════════════════
+//
+// Mirrors the agent-config editor above, but targets ~/.pi/agent/models.json —
+// the file pi reads to discover custom providers and models (Ollama, vLLM,
+// LM Studio, OpenAI-compat proxies, OpenRouter routing overrides, etc). See
+// docs/models.md in the embedded pi runtime for the full schema.
+//
+// Save flow:
+//  - Validate JSON on the client so users see syntax errors inline.
+//  - PUT to /api/models-config which writes the file AND calls
+//    modelRegistry.refresh(), so the model picker updates immediately
+//    without restarting the workspace.
+
+const inlineModelsPath = document.getElementById('inline-models-path');
+const inlineModelsTextarea = document.getElementById('inline-models-textarea');
+const inlineModelsError = document.getElementById('inline-models-error');
+const inlineModelsSave = document.getElementById('inline-models-save');
+const inlineModelsInsertExample = document.getElementById('inline-models-insert-example');
+const modelsConfigDocsLink = document.getElementById('models-config-docs-link');
+
+const MODELS_JSON_EXAMPLE = `{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "llama3.1:8b" },
+        { "id": "qwen2.5-coder:7b" }
+      ]
+    }
+  }
+}
+`;
+
+function showInlineModelsError(message) {
+  if (!inlineModelsError) return;
+  inlineModelsError.textContent = message;
+  inlineModelsError.classList.remove('hidden');
+}
+
+function clearInlineModelsError() {
+  if (!inlineModelsError) return;
+  inlineModelsError.textContent = '';
+  inlineModelsError.classList.add('hidden');
+}
+
+async function loadInlineModelsEditor() {
+  if (!inlineModelsTextarea) return;
+  clearInlineModelsError();
+  inlineModelsTextarea.value = '';
+  if (inlineModelsPath) inlineModelsPath.textContent = 'Loading...';
+  try {
+    const resp = await fetch('/api/models-config');
+    const data = await resp.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to load models.json');
+    }
+    try {
+      inlineModelsTextarea.value = JSON.stringify(JSON.parse(data.content), null, 2);
+    } catch {
+      inlineModelsTextarea.value = data.content;
+    }
+    if (inlineModelsPath) inlineModelsPath.textContent = data.path || '';
+  } catch (e) {
+    if (inlineModelsPath) inlineModelsPath.textContent = '';
+    showInlineModelsError(e.message || String(e));
+  }
+}
+
+inlineModelsSave?.addEventListener('click', async () => {
+  if (!inlineModelsTextarea) return;
+  clearInlineModelsError();
+  const content = inlineModelsTextarea.value;
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (e) {
+    showInlineModelsError(`Invalid JSON: ${e.message}`);
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    showInlineModelsError('models.json must be a JSON object.');
+    return;
+  }
+  if ('providers' in parsed && (typeof parsed.providers !== 'object' || Array.isArray(parsed.providers))) {
+    showInlineModelsError("'providers' must be an object.");
+    return;
+  }
+  inlineModelsSave.disabled = true;
+  try {
+    const resp = await fetch('/api/models-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to save models.json');
+    }
+    // Refresh the model picker so newly-defined models appear immediately.
+    try { fetchModelInfo?.(); } catch {}
+  } catch (e) {
+    showInlineModelsError(e.message || String(e));
+  } finally {
+    inlineModelsSave.disabled = false;
+  }
+});
+
+inlineModelsInsertExample?.addEventListener('click', () => {
+  if (!inlineModelsTextarea) return;
+  // Only overwrite if the textarea is empty or just whitespace/empty
+  // providers — never clobber existing user content.
+  const current = inlineModelsTextarea.value.trim();
+  if (current && current !== '{}' && current !== '{\n  "providers": {}\n}') {
+    if (!confirm('Replace current content with the Ollama example?')) return;
+  }
+  inlineModelsTextarea.value = MODELS_JSON_EXAMPLE;
+  clearInlineModelsError();
+});
+
+modelsConfigDocsLink?.addEventListener('click', (e) => {
+  e.preventDefault();
+  // Hand the docs URL off to the OS default browser via /api/open. The
+  // endpoint shells out to `open <arg>` on macOS, which transparently
+  // handles both file paths and https URLs. Falls back to window.open
+  // when the embedded server is not running (dev `npm run dev:web`).
+  const url = 'https://github.com/earendil-works/pi-mono/blob/main/packages/pi/docs/models.md';
+  fetch('/api/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filePath: url }),
+  })
+    .then((r) => { if (!r.ok) throw new Error('open failed'); })
+    .catch(() => { window.open(url, '_blank'); });
 });
 
 // Restore saved theme

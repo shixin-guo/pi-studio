@@ -22,6 +22,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "macOS": {
       "signingIdentity": "-",
       "entitlements": "./entitlements.plist",
@@ -38,6 +39,17 @@
       "../public": "public",
       "../extensions/dist": "extensions",
       "./resources/pi": "pi"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/shixin-guo/pi-web-ui/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

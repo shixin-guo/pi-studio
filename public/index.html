@@ -196,6 +196,25 @@
               <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
             </div>
           </div>
+          <div class="settings-section" id="setting-updater-section">
+            <div class="settings-section-title">Updates</div>
+            <div class="settings-row">
+              <span class="settings-label">Pi Studio version</span>
+              <span class="settings-static-value" id="setting-app-version-value">Loading...</span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-label">Check for updates</span>
+              <button class="settings-value-btn" id="btn-check-updates">Check now</button>
+            </div>
+            <div class="settings-row" id="setting-update-status-row" hidden>
+              <span class="settings-label">Status</span>
+              <span class="settings-static-value" id="setting-update-status"></span>
+            </div>
+            <div class="settings-row" id="setting-update-install-row" hidden>
+              <span class="settings-label" id="setting-update-install-label">Update available</span>
+              <button class="settings-value-btn" id="btn-install-update">Download &amp; install</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -266,6 +285,28 @@
             <div class="settings-config-actions">
               <div class="config-editor-error hidden" id="inline-config-error"></div>
               <button class="btn-primary" id="inline-config-save">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">LLM providers</div>
+            <p class="settings-help">
+              Edit <code>~/.pi/agent/models.json</code> to add custom providers
+              (Ollama, vLLM, LM Studio, OpenAI-compatible proxies, OpenRouter
+              routing overrides, etc). See the
+              <a href="#" id="models-config-docs-link">models.json docs</a>
+              for the full schema. Changes are picked up immediately — no
+              restart needed.
+            </p>
+            <div class="settings-config-meta">
+              <span class="settings-label">Providers file</span>
+              <span class="settings-static-value" id="inline-models-path"></span>
+            </div>
+            <textarea class="config-editor-textarea settings-config-textarea" id="inline-models-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder='{ "providers": { ... } }'></textarea>
+            <div class="settings-config-actions">
+              <div class="config-editor-error hidden" id="inline-models-error"></div>
+              <button class="settings-value-btn" id="inline-models-insert-example">Insert example</button>
+              <button class="btn-primary" id="inline-models-save">Save</button>
             </div>
           </div>
         </div>

@@ -29,6 +29,11 @@ description = "Allow reading installed pi CLI version"
 commands.allow = ["cmd_get_pi_version"]
 
 [[permission]]
+identifier = "allow-cmd-get-app-version"
+description = "Allow reading the running Pi Studio app version (used by the auto-updater UI)"
+commands.allow = ["cmd_get_app_version"]
+
+[[permission]]
 identifier = "allow-cmd-retry-startup"
 description = "Allow retrying startup after a failed embedded pi launch (used by the bootstrap error window)"
 commands.allow = ["cmd_retry_startup"]
@@ -44,5 +49,6 @@ permissions = [
   "allow-cmd-switch-session",
   "allow-cmd-stop-instance",
   "allow-cmd-get-pi-version",
+  "allow-cmd-get-app-version",
   "allow-cmd-retry-startup",
 ]

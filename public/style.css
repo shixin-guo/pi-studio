@@ -1787,6 +1787,18 @@ body {
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 }
 
+.settings-static-value[data-tone='ok'] {
+  color: var(--accent-success, #4ade80);
+}
+
+.settings-static-value[data-tone='warn'] {
+  color: var(--accent-warning, #f59e0b);
+}
+
+.settings-static-value[data-tone='error'] {
+  color: var(--accent-danger, #ef4444);
+}
+
 .settings-input {
   padding: 5px 10px;
   background: var(--bg-glass);

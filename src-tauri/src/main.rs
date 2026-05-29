@@ -130,6 +130,14 @@ fn cmd_get_pi_version() -> Result<String, String> {
     Ok(locked_pi_version().to_string())
 }
 
+/// Returns the running Pi Studio app version (the `version` field from
+/// `src-tauri/Cargo.toml`, baked in at compile time). Surfaced in the
+/// Settings → Updates panel so users can verify what they're running.
+#[tauri::command]
+fn cmd_get_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 // ─── Window helpers ───────────────────────────────────────────────────────────
 
 fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
@@ -314,6 +322,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let static_dir = find_static_dir(app);
             let manager = Arc::new(PiManager::new(static_dir));
@@ -423,6 +433,7 @@ fn main() {
             cmd_stop_instance,
             cmd_pick_folder,
             cmd_get_pi_version,
+            cmd_get_app_version,
             cmd_retry_startup,
         ])
         .build(tauri::generate_context!())
