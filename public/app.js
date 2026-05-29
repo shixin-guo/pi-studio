@@ -1838,6 +1838,29 @@ async function loadAppVersion() {
   appVersionValue.textContent = 'unknown';
 }
 
+// Pattern-match the most common Tauri updater errors so we can show a
+// useful explanation instead of the raw "Could not fetch a valid release
+// JSON from the remote" string. The plugin throws this for *any* of:
+//   - endpoint returned 404 (no `latest.json` attached to the release yet)
+//   - endpoint returned a manifest without an entry for our platform/arch
+//   - `pubkey` is empty, so the signature couldn't even be parsed
+// All three are common during initial setup, so we explain them inline
+// rather than just dumping the error.
+function explainUpdateError(rawMessage) {
+  const msg = String(rawMessage || '');
+  if (/Could not fetch a valid release JSON/i.test(msg)) {
+    return (
+      'No update manifest published yet. Either the latest GitHub release ' +
+      "doesn't include `latest.json`, or it has no entry for this platform. " +
+      'See docs/AUTO_UPDATER.md.'
+    );
+  }
+  if (/pubkey|public key|signature/i.test(msg)) {
+    return 'Updater public key is missing or the bundle signature is invalid. See docs/AUTO_UPDATER.md.';
+  }
+  return msg || 'Unknown updater error';
+}
+
 async function checkForUpdates({ silent = false } = {}) {
   if (updaterBusy) return null;
 
@@ -1868,10 +1891,10 @@ async function checkForUpdates({ silent = false } = {}) {
     setUpdateStatus(`Update available: ${update.version}`, 'ok');
     return update;
   } catch (err) {
-    const msg = String(err?.message || err || 'unknown error');
-    console.error('[updater] check failed:', err);
+    const friendly = explainUpdateError(err?.message || err);
+    console.warn('[updater] check failed:', err);
     if (!silent) {
-      setUpdateStatus(`Update check failed: ${msg}`, 'error');
+      setUpdateStatus(friendly, 'warn');
     }
     return null;
   } finally {
@@ -1931,6 +1954,14 @@ async function installPendingUpdate() {
   }
 }
 
+// `tauri dev` serves the WebView from the live-server at 127.0.0.1:1420.
+// A packaged release talks to the embedded pi server on localhost:<port>
+// (3001+). Use that as the cheap "am I in dev?" signal so we don't hit
+// the GitHub release endpoint on every dev reload.
+function isDevBuild() {
+  return location.hostname === '127.0.0.1' && location.port === '1420';
+}
+
 function initUpdaterUI() {
   if (!updaterSection) return;
 
@@ -1940,6 +1971,12 @@ function initUpdaterUI() {
   }
 
   loadAppVersion();
+
+  if (isDevBuild()) {
+    setUpdateStatus('Dev build — updates are checked only in packaged releases.', 'info');
+    if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
+    return;
+  }
 
   checkUpdatesBtn?.addEventListener('click', () => {
     checkForUpdates({ silent: false });

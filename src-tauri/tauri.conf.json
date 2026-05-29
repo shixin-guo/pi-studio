@@ -45,7 +45,7 @@
     "updater": {
       "pubkey": "",
       "endpoints": [
-        "https://github.com/shixin-guo/pi-web-ui/releases/latest/download/latest.json"
+        "https://github.com/shixin-guo/pi-studio/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
