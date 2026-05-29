@@ -3,13 +3,15 @@
 // "New session" in Pi Studio always spawns a *new* pi process in a *new* OS
 // window — even when the target cwd already has a running pi.
 //
-// Rationale: pi only has a single active session per process (a `new_session`
-// RPC tears down the old one), so reusing the current pi process would kill
-// whatever task is currently running there. To support running multiple agent
-// tasks in parallel against the same workspace, every "new session" gets its
-// own isolated pi process and its own window. Switching back to a previous
-// task is just clicking that other window (or reopening it from the launcher
-// / sidebar via the running-instance list).
+// Rationale: a `pi --mode rpc` process can only drive ONE active session at
+// a time. `new_session` / `switch_session` / fork inside an existing process
+// just *replace* the active session — the previous session's .jsonl stays on
+// disk and can be reloaded later, but it stops being the live, running
+// session in that process. So any concurrently-running session structurally
+// needs its own pi process. We map that 1:1 onto OS windows: each "new
+// session" gets its own isolated pi process and its own window. Switching
+// back to a previous task is just clicking that other window (or reopening
+// it from the launcher / sidebar via the running-instance list).
 //
 // "Open project" / "Open folder" entry points still attach to an existing pi
 // instance for the same cwd when one exists — those actions are about

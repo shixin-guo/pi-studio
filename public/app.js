@@ -1184,9 +1184,10 @@ async function resetUiForNewSession() {
 async function newSession() {
   if (window.tauriNative) {
     // In Pi Studio, "New Session" spawns a *new* pi process in a new OS
-    // window for the current cwd. The current window/session keeps running
-    // so the user can run multiple agent tasks in parallel against the
-    // same workspace. See workspace-actions.js for the rationale.
+    // window for the current cwd. A single pi process can only drive one
+    // active session at a time, so a parallel task needs its own process.
+    // The current window/session keeps running undisturbed. See
+    // workspace-actions.js for the full rationale.
     await startInWindowNewSession({
       tauriNative: window.tauriNative,
       fetchInstances,

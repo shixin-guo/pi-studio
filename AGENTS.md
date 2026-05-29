@@ -33,7 +33,7 @@ Tauri IPC commands (invoked via `window.tauriNative` in `public/tauri-bridge.js`
 - Local Codex-style GUI: all projects and agents visible in one app
 - Multi-project: each project has its own window, isolated working directory, session history, and running agent
 - Multi-agent: spawn new agents per project; switch between sessions without leaving the app
-- Multi-task: "+ New Session" always spawns a *new* pi process in a *new* OS window (even for the same workspace), so multiple agent tasks can run in parallel against the same project. Pi only supports one active session per process, so reusing the current pi would otherwise kill the running task.
+- Multi-task: a `pi --mode rpc` process can only drive **one active session at a time** (switching/forking inside one process *replaces* the active session — the old `.jsonl` is preserved on disk, but it stops being the live, running session). So every concurrently-running session structurally needs its own `pi` process. Pi Studio maps that 1:1 onto OS windows: "+ New Session" always spawns a new pi process + new window for the same workspace, which is what lets multiple agent tasks run in parallel against the same project.
 - Visualization: streaming chat, tool-call cards, thinking blocks, token/cost tracking per session
 - Fully self-contained desktop app: zero dependency on the user's PATH / shell environment / globally installed pi
 
