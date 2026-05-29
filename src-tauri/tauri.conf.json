@@ -5,9 +5,9 @@
   "version": "0.1.9",
   "build": {
     "frontendDist": "../public",
-    "beforeDevCommand": "npm run dev:web",
+    "beforeDevCommand": "npm run fetch:pi && npm run dev:web",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build:extensions"
+    "beforeBuildCommand": "npm run fetch:pi && npm run build:extensions"
   },
   "app": {
     "withGlobalTauri": true,

@@ -28,6 +28,11 @@ identifier = "allow-cmd-get-pi-version"
 description = "Allow reading installed pi CLI version"
 commands.allow = ["cmd_get_pi_version"]
 
+[[permission]]
+identifier = "allow-cmd-retry-startup"
+description = "Allow retrying startup after a failed embedded pi launch (used by the bootstrap error window)"
+commands.allow = ["cmd_retry_startup"]
+
 # Permission set that bundles all custom command permissions.
 # Referenced from capabilities/default.json as "pi-desktop:default".
 [default]
@@ -39,4 +44,5 @@ permissions = [
   "allow-cmd-switch-session",
   "allow-cmd-stop-instance",
   "allow-cmd-get-pi-version",
+  "allow-cmd-retry-startup",
 ]

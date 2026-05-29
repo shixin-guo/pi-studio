@@ -29,11 +29,15 @@
     pickFolder: () =>
       invoke('cmd_pick_folder'),
 
+    // `forceNewSession` defaults to `false`: a freshly-spawned pi already boots
+    // into a brand-new session, so the extra `new_session` RPC was redundant
+    // and caused a second extension reload (see workspace-actions.js for the
+    // longer rationale). Callers that genuinely want a new chat pass `true`.
     openWorkspace: (cwd, options = {}) =>
       invoke('cmd_open_workspace', {
         cwd,
         sessionPath: options.sessionPath ?? null,
-        forceNewSession: options.forceNewSession ?? true,
+        forceNewSession: options.forceNewSession ?? false,
         openWindow: options.openWindow ?? true,
         waitForSessions: options.waitForSessions ?? false,
       }),

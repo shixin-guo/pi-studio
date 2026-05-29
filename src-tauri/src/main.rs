@@ -2,9 +2,7 @@
 
 mod pi_manager;
 
-use pi_manager::{
-    is_port_in_use, locked_pi_version, wait_for_endpoint, wait_for_health, PiManager,
-};
+use pi_manager::{locked_pi_version, wait_for_endpoint, wait_for_health, PiManager};
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -177,26 +175,45 @@ fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), Str
 }
 
 fn find_static_dir(app: &tauri::App) -> PathBuf {
-    // In `tauri dev`, the process cwd is often `src-tauri/`, so `./public`
-    // points to a non-existent folder. Prefer the workspace root public dir.
-    let workspace_public = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("public");
-    if workspace_public.join("index.html").exists() {
-        return fs::canonicalize(&workspace_public).unwrap_or(workspace_public);
-    }
-
-    let dev_path = std::env::current_dir().unwrap_or_default().join("public");
-    if dev_path.join("index.html").exists() {
-        return fs::canonicalize(&dev_path).unwrap_or(dev_path);
-    }
+    // Release builds: ALWAYS prefer the bundled resource dir. We must check
+    // this first because `CARGO_MANIFEST_DIR` is a compile-time string that
+    // gets baked into the binary, so on a developer's machine that string
+    // still resolves to a real `public/` directory (the repo) and would
+    // shadow the bundled resources — making `static_dir.parent()/pi/pi`
+    // resolve to `<repo>/pi/pi`, which doesn't exist, with the misleading
+    // "run npm run fetch:pi" error.
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir.join("public");
         if bundled.join("index.html").exists() {
-            return bundled;
+            return fs::canonicalize(&bundled).unwrap_or(bundled);
         }
     }
-    dev_path
+
+    // Debug builds (`tauri dev`): the bundle isn't assembled yet, so fall
+    // back to the repo's `public/`. `CARGO_MANIFEST_DIR` is fine here
+    // because debug builds are only ever run on the build machine.
+    if cfg!(debug_assertions) {
+        let workspace_public = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("public");
+        if workspace_public.join("index.html").exists() {
+            return fs::canonicalize(&workspace_public).unwrap_or(workspace_public);
+        }
+
+        let dev_path = std::env::current_dir().unwrap_or_default().join("public");
+        if dev_path.join("index.html").exists() {
+            return fs::canonicalize(&dev_path).unwrap_or(dev_path);
+        }
+        return dev_path;
+    }
+
+    // Release build with no resource dir found: return the bundled path
+    // anyway so the downstream "could not find pi binary" error points at
+    // the actual install location instead of a stale dev path.
+    app.path()
+        .resource_dir()
+        .map(|d| d.join("public"))
+        .unwrap_or_else(|_| PathBuf::from("public"))
 }
 
 fn list_session_files(root: &PathBuf) -> Vec<PathBuf> {
@@ -282,11 +299,10 @@ async fn cmd_retry_startup(manager: State<'_, PiManagerState>) -> Result<u16, St
         Some((resolved_cwd, resolved_session_path)) => (resolved_cwd, Some(resolved_session_path)),
         None => (home_cwd, None),
     };
-    let initial_port = 3001u16;
-
-    if !is_port_in_use(initial_port) {
-        manager.spawn(&cwd, initial_port, session_path.as_deref())?;
-    }
+    // Mirror the main setup hook: never adopt a port we don't own. Always
+    // claim a fresh one so the resulting pi is driveable via our PiManager.
+    let initial_port = manager.next_port();
+    manager.spawn(&cwd, initial_port, session_path.as_deref())?;
     wait_for_health(initial_port, 30).await?;
     Ok(initial_port)
 }
@@ -323,34 +339,54 @@ fn main() {
                 }
             };
 
-            let initial_port = 3001u16;
+            // Pick the first free port at/above 3001. We deliberately do NOT
+            // reuse a port that is already in use, even if "something pi-shaped"
+            // is listening on it, because:
+            //
+            //   1. We can't drive that process: `cmd_new_session` /
+            //      `cmd_switch_session` write to *our* `PiManager.processes`
+            //      map. A pi we didn't spawn (e.g. left over from an installed
+            //      Pi Studio still running, or a previous `npm run dev` whose
+            //      Rust side crashed without taking its children with it) is
+            //      not in that map, so every RPC fails with
+            //      `No pi instance on port <p>` and the UI looks broken.
+            //
+            //   2. Even if we could control it, the WebView would be talking
+            //      to a completely different pi process with a different cwd
+            //      and a different session history. That's strictly worse
+            //      than starting our own.
+            //
+            // Allocating a fresh port for *this* Pi Studio instance is the
+            // simple invariant that avoids both classes of confusion. The
+            // tradeoff is that `http://localhost:3001` is no longer a
+            // guaranteed entry point — but Pi Studio doesn't promise that;
+            // the WebView discovers its port via the window URL.
+            let initial_port = manager.next_port();
 
-            // Dev mode: pi may already be running (started by beforeDevCommand)
             let mut startup_ok = true;
-            if !is_port_in_use(initial_port) {
-                if let Err(err) = manager.spawn(&cwd, initial_port, session_path.as_deref()) {
-                    startup_ok = false;
-                    eprintln!("[pi-desktop] startup failed to spawn pi: {}", err);
-                    if let Err(window_err) = open_bootstrap_window(&app.handle().clone(), &err) {
-                        eprintln!(
-                            "[pi-desktop] failed to open bootstrap window after startup error: {}",
-                            window_err
-                        );
-                        app.dialog()
-                            .message(format!(
-                                "Pi Studio could not start the embedded pi runtime.\n\n{}\n\nThe Pi Studio installation may be incomplete or corrupted. Please reinstall Pi Studio and try again.",
-                                err
-                            ))
-                            .title("Pi Studio startup failed")
-                            .kind(MessageDialogKind::Error)
-                            .show(|_| {});
-                    }
-                }
-            } else {
+            if initial_port != 3001 {
                 eprintln!(
-                    "[pi-desktop] Port {} already in use, attaching to existing pi",
+                    "[pi-desktop] port 3001 unavailable, using {} instead (likely another Pi Studio instance is running)",
                     initial_port
                 );
+            }
+            if let Err(err) = manager.spawn(&cwd, initial_port, session_path.as_deref()) {
+                startup_ok = false;
+                eprintln!("[pi-desktop] startup failed to spawn pi: {}", err);
+                if let Err(window_err) = open_bootstrap_window(&app.handle().clone(), &err) {
+                    eprintln!(
+                        "[pi-desktop] failed to open bootstrap window after startup error: {}",
+                        window_err
+                    );
+                    app.dialog()
+                        .message(format!(
+                            "Pi Studio could not start the embedded pi runtime.\n\n{}\n\nThe Pi Studio installation may be incomplete or corrupted. Please reinstall Pi Studio and try again.",
+                            err
+                        ))
+                        .title("Pi Studio startup failed")
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| {});
+                }
             }
 
             app.manage(manager.clone());

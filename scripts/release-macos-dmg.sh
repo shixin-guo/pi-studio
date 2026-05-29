@@ -11,6 +11,15 @@ fi
 
 cd "$ROOT_DIR"
 
+# Mirror the `prebuild` npm lifecycle hook. The release script intentionally
+# calls `tauri build` directly (not `npm run build`) so the npm hook does NOT
+# fire automatically. Reproduce it here so a release never ships with a
+# stale or missing embedded pi binary / extension bundle.
+echo "Fetching embedded pi binary (idempotent if version matches)..."
+node "$ROOT_DIR/scripts/fetch-pi-binary.js"
+echo "Building extensions bundle..."
+node "$ROOT_DIR/scripts/build-extensions.js"
+
 echo "Building macOS DMG via Tauri (standard bundler path)..."
 PATH="$HOME/.cargo/bin:$PATH" tauri build --bundles dmg
 

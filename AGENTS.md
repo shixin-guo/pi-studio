@@ -33,6 +33,7 @@ Tauri IPC commands (invoked via `window.tauriNative` in `public/tauri-bridge.js`
 - Local Codex-style GUI: all projects and agents visible in one app
 - Multi-project: each project has its own window, isolated working directory, session history, and running agent
 - Multi-agent: spawn new agents per project; switch between sessions without leaving the app
+- Multi-task: "+ New Session" always spawns a *new* pi process in a *new* OS window (even for the same workspace), so multiple agent tasks can run in parallel against the same project. Pi only supports one active session per process, so reusing the current pi would otherwise kill the running task.
 - Visualization: streaming chat, tool-call cards, thinking blocks, token/cost tracking per session
 - Fully self-contained desktop app: zero dependency on the user's PATH / shell environment / globally installed pi
 
@@ -64,6 +65,31 @@ Conventions for any coding agent working in this directory.
 2. `npm run fetch:pi` (re-downloads the platform tarball, replaces `src-tauri/resources/pi/`).
 3. Smoke test: `./src-tauri/resources/pi/pi --version` and `npm run dev`.
 4. Commit `scripts/pi-version.json`. Do **not** commit `src-tauri/resources/pi/`; it is gitignored.
+
+## Embedded pi: how it ends up inside the .app
+
+End users never run `fetch:pi`. The flow that puts `pi` inside the shipped
+bundle is:
+
+1. **Pre-build hook (npm).** `package.json` `prebuild` runs `npm run fetch:pi`
+   before `tauri build`. Downloads the platform tarball into
+   `src-tauri/resources/pi/` (idempotent; skipped if `.version` matches).
+2. **Tauri before-hooks.** `tauri.conf.json` `build.beforeBuildCommand` and
+   `build.beforeDevCommand` BOTH run `npm run fetch:pi` first, so even
+   invoking `tauri build` / `tauri dev` directly (no `npm run build`) still
+   guarantees the binary is present.
+3. **Tauri bundling.** `tauri.conf.json` `bundle.resources` maps
+   `./resources/pi` → `pi`, so the entire pi runtime tree is copied into
+   `<App>.app/Contents/Resources/pi/` at package time.
+4. **Last-line guard (build.rs).** `src-tauri/build.rs` PANICS at compile
+   time if `resources/pi/<bin>` is missing in a release profile. This
+   prevents `cargo build --release` (or any IDE that bypasses npm) from
+   silently producing a .app with no pi inside. Override only for local
+   experiments via `PI_STUDIO_SKIP_BIN_CHECK=1`.
+
+Net effect: there is no path that ships a Pi Studio release without the
+embedded pi binary. End users get a self-contained app — no PATH lookups,
+no `npm run fetch:pi`, no manual install of pi.
 
 ## Post-fix verification (Rust / Tauri)
 

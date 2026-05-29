@@ -229,10 +229,21 @@
         </div>
       </div>
 
-      <div class="settings-tab" data-settings-panel="auth" id="settings-auth-section" style="display:none">
+      <div class="settings-tab" data-settings-panel="auth">
         <div class="settings-header"><h3>Authentication</h3></div>
         <div class="settings-body">
           <div class="settings-section">
+            <div class="settings-section-title">API keys</div>
+            <p class="settings-help">
+              Keys are stored locally in <code>~/.pi/agent/auth.json</code> (chmod 600).
+              Pi Studio launched from Finder does not read shell environment
+              variables, so set keys here for them to stick across launches.
+            </p>
+            <div class="settings-api-keys" id="settings-api-keys">
+              <div class="settings-api-keys-loading">Loading providers…</div>
+            </div>
+          </div>
+          <div class="settings-section" id="settings-auth-section" style="display:none">
             <div class="settings-section-title">Protection</div>
             <div class="settings-row">
               <span class="settings-label">Require login</span>

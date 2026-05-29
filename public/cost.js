@@ -22,6 +22,47 @@ let currentPayload = null;
 
 if (window.self !== window.top) {
   document.body.classList.add('embedded-cost-view');
+  syncThemeFromParent();
+}
+
+function syncThemeFromParent() {
+  let parentRoot;
+  try {
+    parentRoot = window.parent?.document?.documentElement;
+  } catch {
+    // Cross-origin: fall back to localStorage / OS preference.
+    parentRoot = null;
+  }
+
+  const applyTheme = (themeId) => {
+    if (!themeId) return;
+    document.documentElement.setAttribute('data-theme', themeId);
+  };
+
+  if (parentRoot) {
+    applyTheme(parentRoot.getAttribute('data-theme'));
+    try {
+      const observer = new MutationObserver(() => {
+        applyTheme(parentRoot.getAttribute('data-theme'));
+      });
+      observer.observe(parentRoot, { attributes: true, attributeFilter: ['data-theme'] });
+    } catch {
+      // ignore observer setup failure
+    }
+    return;
+  }
+
+  // Cross-origin fallback: read the same key the parent persists.
+  try {
+    const saved = localStorage.getItem('pi-studio-theme');
+    if (saved === 'dark') applyTheme('night');
+    else if (saved === 'light') applyTheme('terracotta');
+    else if (saved) applyTheme(saved);
+    else if (window.matchMedia?.('(prefers-color-scheme: light)').matches) applyTheme('terracotta');
+    else applyTheme('night');
+  } catch {
+    applyTheme('night');
+  }
 }
 
 function formatUsd(value) {

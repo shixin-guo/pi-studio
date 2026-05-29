@@ -29,12 +29,27 @@
  *   `PI_STUDIO_PI_VERSION` env var.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
+
+// `pi` is compiled with `bun build --compile`. Inside that runtime,
+// `http.createServer(...).on("upgrade", ...)` accepts the upgrade event
+// but `socket.write()` (which `ws.handleUpgrade` uses to send the
+// `HTTP/1.1 101 Switching Protocols` reply) is silently dropped, so the
+// client never completes the handshake. The result in Pi Studio is
+// "Disconnected" forever and chat sessions never render.
+//
+// `Bun.serve()` ships its own native WebSocket upgrade path and *does*
+// work in the bundled binary, so when the global is present we go that
+// route. The plain Node path is kept for dev (jiti/tsx loading the .ts
+// source directly under Node) and as a defensive fallback.
+declare const Bun: any;
+const HAS_BUN_SERVE = typeof (globalThis as any).Bun !== "undefined"
+  && typeof (globalThis as any).Bun?.serve === "function";
 
 type OpenTarget = {
   id: string;
@@ -234,21 +249,177 @@ function resolveWorkspaceWithinProjects(projectPath: string): { projectsRoot: st
   return { projectsRoot: realProjectsRoot, targetPath: realTargetPath };
 }
 
+// ─── Process-global server state ──────────────────────────────────────────────
+//
+// pi reloads the extension on every `new_session` / `switch_session` / `fork`:
+// the old extension instance receives `session_shutdown`, the module is
+// rebound, and the new instance receives `session_start`. If we closed the
+// HTTP+WS server in `session_shutdown` and re-listened on `session_start`,
+// the WebView (anchored at e.g. `http://localhost:3001`) would either:
+//   - race against the slow `server.close()` and end up on PORT+1, OR
+//   - just see a dead socket while close() drains active connections.
+// Both manifest to the user as "create session does nothing".
+//
+// Fix: own the HTTP server, WS server, client set, and heartbeat at the
+// process scope. We start them once (lazily on the first `session_start`)
+// and keep them alive for the lifetime of the pi process. Each new extension
+// instance just (re)publishes its `handleCommand` / `latestCtx` / event
+// broadcaster into the global so the long-lived `wss.on("connection", …)`
+// handler always dispatches through the *current* session's bindings.
+// Cache key for parsed session file headers / metrics. We key on absolute
+// path and invalidate on (mtimeMs, size). pi *appends* to JSONL files for the
+// active session, so size grows monotonically until the session ends — this
+// is sufficient to detect "needs reparse" without diffing content.
+type SessionFileCacheEntry<T> = {
+  mtimeMs: number;
+  size: number;
+  value: T;
+};
+
+// A unified handle to whichever underlying server is currently bound.
+// Only one of `nodeServer` / `bunServer` is non-null at any time; the
+// other fields (port / close) abstract over the differences so the rest
+// of the code (lifecycle, instance registry, shutdown) doesn't need to
+// branch on runtime.
+type ServerHandle = {
+  port: number;
+  // Force-close everything, used in tests / hot reload — production never
+  // calls this, the server lives for the pi process lifetime.
+  close: () => void;
+  // The native handle, for callers that genuinely need it (currently
+  // only the `server.address()` peek in the re-register path).
+  nodeServer: http.Server | null;
+  bunServer: any | null;
+};
+
+// Unified WebSocket wrapper: either the `ws`-library WebSocket (node path)
+// or Bun's `ServerWebSocket` (bun path). We only depend on the small
+// surface used by the rest of this extension: send/close/readyState/ping,
+// plus a synthetic `isAlive` flag for the heartbeat reaper.
+//
+// We keep this as a structural type rather than a wrapper class because
+// the bun ServerWebSocket already exposes `.send(string)`, `.readyState`,
+// `.ping()`, and `.close()` — they just lack `.terminate()` and the
+// event-emitter `.on(...)` API. The wrapper closes that gap minimally.
+type UnifiedWS = {
+  readyState: number;
+  send: (data: string) => any;
+  close: () => void;
+  terminate: () => void;
+  ping: () => void;
+  isAlive?: boolean;
+};
+
+type EmbeddedServerGlobal = {
+  server: ServerHandle | null;
+  wss: WebSocketServer | null;
+  clients: Set<UnifiedWS>;
+  heartbeatTimer: NodeJS.Timeout | null;
+  localUrl: string;
+  // Re-published by every extension instance on session_start so the
+  // connection handler dispatches to the new session's pi/ctx.
+  handleCommand: ((ws: WebSocket, command: any) => Promise<void>) | null;
+  buildStateSnapshot: ((ctx: ExtensionContext) => Promise<any>) | null;
+  getLatestCtx: (() => ExtensionContext | null) | null;
+  // Cached process-scoped references that don't change across sessions.
+  //
+  // `ModelRegistry` (and its `AuthStorage`) are owned by the pi process,
+  // not by any one session: `~/.pi/agent/auth.json` is shared across every
+  // `new_session` / `switch_session` / `fork` and every extension reload
+  // pi-mono does. The auth Settings panel (`list_auth_status` /
+  // `set_api_key` / `remove_api_key`) only needs the registry — gating it
+  // behind the per-session `latestCtx` caused "Failed to load providers"
+  // whenever the user opened Settings → Authentication during the brief
+  // window before pi fires its first `session_start`, or in the gap
+  // between sessions during a reload. We cache the first registry we see
+  // here and prefer it (when present) over `latestCtx?.modelRegistry`.
+  modelRegistry: ModelRegistry | null;
+  // The freshest `ExtensionAPI` (i.e. `pi`) reference, re-published on
+  // every `session_start`. Command handlers MUST go through this getter
+  // instead of capturing the `pi` parameter from `export default function`
+  // in their closure: pi-mono invalidates the old `pi` after `new_session`,
+  // `switch_session`, `fork`, and `reload`, and any session-bound call on
+  // a stale `pi` (e.g. `pi.setThinkingLevel`, `pi.sendUserMessage`,
+  // `pi.setSessionName`) throws an error that pi-mono surfaces as an
+  // `extension_error` event — which the frontend renders as a red error
+  // bubble in chat. Routing through `getApi()` guarantees we always hit
+  // the current session's `pi`.
+  getApi: (() => ExtensionAPI | null) | null;
+  // Process-scoped parse caches. Live across extension reloads (which would
+  // otherwise wipe per-extension `Map`s on every new_session). Without these,
+  // `/api/sessions` re-reads + re-parses the JSONL header of every session
+  // file in `~/.pi/agent/sessions/**` on every request, which dominates
+  // launcher / sidebar warmup latency for users with many sessions.
+  sessionHeaderCache: Map<string, SessionFileCacheEntry<any>>;
+  sessionMetricsCache: Map<string, SessionFileCacheEntry<any>>;
+};
+
+const EMBEDDED_GLOBAL_KEY = "__piStudioEmbeddedServer__";
+
+function getOrCreateGlobalState(): EmbeddedServerGlobal {
+  const g = globalThis as any;
+  if (!g[EMBEDDED_GLOBAL_KEY]) {
+    g[EMBEDDED_GLOBAL_KEY] = {
+      server: null,
+      wss: null,
+      clients: new Set<UnifiedWS>(),
+      heartbeatTimer: null,
+      localUrl: "",
+      handleCommand: null,
+      buildStateSnapshot: null,
+      getLatestCtx: null,
+      getApi: null,
+      modelRegistry: null,
+      sessionHeaderCache: new Map<string, SessionFileCacheEntry<any>>(),
+      sessionMetricsCache: new Map<string, SessionFileCacheEntry<any>>(),
+    } as EmbeddedServerGlobal;
+  }
+  return g[EMBEDDED_GLOBAL_KEY] as EmbeddedServerGlobal;
+}
+
 export default function (pi: ExtensionAPI) {
-  let server: http.Server | null = null;
-  let wss: WebSocketServer | null = null;
-  let heartbeatTimer: NodeJS.Timeout | null = null;
-  const clients = new Set<WebSocket>();
+  const globalState = getOrCreateGlobalState();
 
   // Store latest context reference for use in command handlers
   let latestCtx: ExtensionContext | null = null;
 
   // ═══════════════════════════════════════
-  // Helper: send to one client
+  // Always resolve the freshest `pi` from globalState before calling any
+  // session-bound API.
+  //
+  // pi-mono invalidates the captured `pi` after `new_session`,
+  // `switch_session`, `fork`, and `reload`. If a WS command (e.g.
+  // `cycle_thinking_level`) is dispatched through a closure that captured
+  // the *old* `pi` — for example because `globalState.handleCommand` was
+  // re-published a tick later than expected — calling
+  // `oldPi.setThinkingLevel()` etc. throws "This extension ctx is stale
+  // after session replacement or reload". pi-mono surfaces that throw as
+  // an `extension_error` event, which the frontend renders as a red error
+  // bubble in chat (`public/app.js` `extension_error` case).
+  //
+  // Routing through `currentPi()` guarantees the call is dispatched to
+  // whichever extension instance most recently received `session_start`
+  // (and thus owns the live, non-stale `pi` for the active session).
+  // Returns `null` only during the brief window between an old instance's
+  // `session_shutdown` and the new instance's `session_start`; callers
+  // must treat that as "no active session".
+  function currentPi(): ExtensionAPI | null {
+    return globalState.getApi?.() ?? null;
+  }
+
   // ═══════════════════════════════════════
-  function sendTo(ws: WebSocket, data: any) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data));
+  // Helper: send to one client
+  //
+  // Accepts either a `ws.WebSocket` or a Bun `ServerWebSocket` — both
+  // expose `.send(string)` and `.readyState`. We hard-code the OPEN
+  // constant (1) instead of referencing `WebSocket.OPEN`, because on the
+  // Bun path the `ws` library isn't actually live (just imported for
+  // types) and pulling its constants would defeat the whole point.
+  // ═══════════════════════════════════════
+  const WS_OPEN = 1;
+  function sendTo(ws: UnifiedWS, data: any) {
+    if (ws.readyState === WS_OPEN) {
+      try { ws.send(JSON.stringify(data)); } catch {}
     }
   }
 
@@ -257,38 +428,18 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   function broadcast(data: any) {
     const json = JSON.stringify(data);
-    for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(json);
+    for (const client of globalState.clients) {
+      if (client.readyState === WS_OPEN) {
+        try { client.send(json); } catch {}
       }
     }
   }
 
-  let localUrl = "";
-
-  // ═══════════════════════════════════════
-  // Helper: stop the server
-  // ═══════════════════════════════════════
-  function stopServer() {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-    if (wss) {
-      for (const client of clients) {
-        client.close();
-      }
-      clients.clear();
-      wss.close();
-      wss = null;
-    }
-    if (server) {
-      server.close();
-      server = null;
-    }
-    unregisterInstance();
-    localUrl = "";
-  }
+  // NOTE: we intentionally do NOT close the HTTP/WS server on
+  // `session_shutdown`. The server is owned by `globalState` and lives for
+  // the whole pi process lifetime — see the comment on `EmbeddedServerGlobal`
+  // above for why. Per-session cleanup (clearing context, unregistering the
+  // instance entry) happens in the `session_shutdown` handler instead.
 
   // ═══════════════════════════════════════
   // Event forwarding — subscribe to all Pi events
@@ -303,9 +454,19 @@ export default function (pi: ExtensionAPI) {
     "model_select",
   ] as const;
 
+  // Cache the process-scoped ModelRegistry the first time we see any ctx.
+  // See the EmbeddedServerGlobal.modelRegistry comment for why this is
+  // process-scoped (and why gating auth handlers on latestCtx was wrong).
+  function rememberCtx(ctx: ExtensionContext) {
+    latestCtx = ctx;
+    if (!globalState.modelRegistry && ctx?.modelRegistry) {
+      globalState.modelRegistry = ctx.modelRegistry;
+    }
+  }
+
   for (const eventType of eventTypes) {
     pi.on(eventType as any, async (event: any, ctx: ExtensionContext) => {
-      latestCtx = ctx;
+      rememberCtx(ctx);
 
       // Forward event to all connected browser clients
       // Wrap in { type: "event", event: ... } to match the existing frontend protocol
@@ -320,7 +481,7 @@ export default function (pi: ExtensionAPI) {
   let userMessages: string[] = [];
 
   pi.on("session_start", async (_event, ctx) => {
-    latestCtx = ctx;
+    rememberCtx(ctx);
     turnCount = 0;
     titleSet = false;
     userMessages = [];
@@ -350,7 +511,15 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", async (_event, _ctx) => {
     if (titleSet || turnCount < 2) return;
 
-    const sessionName = pi.getSessionName();
+    // Defensive: if the turn that just ended also kicked off a session
+    // replacement (e.g. `/new`, `/fork`, `/switch`), the captured `pi` of
+    // this OLD extension instance is now stale. Route through the freshest
+    // `pi` published on `globalState` so we never call a stale
+    // `getSessionName` / `setSessionName`.
+    const a = currentPi();
+    if (!a) return;
+
+    const sessionName = a.getSessionName();
     if (sessionName && sessionName !== "New Session" && sessionName !== "Untitled") {
       titleSet = true;
       return;
@@ -359,7 +528,7 @@ export default function (pi: ExtensionAPI) {
     // Generate title from collected messages
     const title = generateSessionTitle(userMessages);
     if (title) {
-      pi.setSessionName(title);
+      a.setSessionName(title);
       titleSet = true;
       // Broadcast to connected clients
       broadcast({ type: "event", event: { type: "session_name", name: title } });
@@ -423,8 +592,9 @@ export default function (pi: ExtensionAPI) {
 
     // Get model info
     const model = ctx.model;
-    const thinkingLevel = pi.getThinkingLevel();
-    const sessionName = pi.getSessionName();
+    const api = currentPi();
+    const thinkingLevel = api?.getThinkingLevel() ?? "off";
+    const sessionName = api?.getSessionName() ?? "";
     const sessionFile = ctx.sessionManager.getSessionFile();
 
     // Context usage
@@ -445,9 +615,12 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Handle commands from browser clients
   // ═══════════════════════════════════════
-  async function handleCommand(ws: WebSocket, command: any) {
+  async function handleCommand(ws: UnifiedWS, command: any) {
     const id = command.id;
     const ctx = latestCtx;
+    // Always resolve `pi` from the global publisher rather than the
+    // closure-captured one. See `currentPi()` for the rationale.
+    const api = currentPi();
 
     const success = (cmd: string, data?: any) => {
       const resp: any = { type: "response", command: cmd, success: true, id };
@@ -459,16 +632,29 @@ export default function (pi: ExtensionAPI) {
       return { type: "response", command: cmd, success: false, error: message, id };
     };
 
+    // Used by every case that performs a session-bound mutation
+    // (`sendUserMessage`, `setThinkingLevel`, `setModel`, `setSessionName`,
+    // …). Returning a clean error here is cheaper than letting the call
+    // throw `"This extension ctx is stale after session replacement"` and
+    // having pi-mono re-emit it as an `extension_error` event in chat.
+    const requireApi = (cmd: string): ExtensionAPI | null => {
+      if (api) return api;
+      sendTo(ws, error(cmd, "No active session"));
+      return null;
+    };
+
     try {
       switch (command.type) {
         // ─── Prompting ───
         case "prompt": {
+          const a = requireApi("prompt");
+          if (!a) break;
           if (ctx && !ctx.isIdle()) {
             const behavior = command.streamingBehavior || "steer";
             if (behavior === "steer") {
-              pi.sendUserMessage(command.message, { deliverAs: "steer" });
+              a.sendUserMessage(command.message, { deliverAs: "steer" });
             } else {
-              pi.sendUserMessage(command.message, { deliverAs: "followUp" });
+              a.sendUserMessage(command.message, { deliverAs: "followUp" });
             }
           } else {
             // Build content with optional images
@@ -499,12 +685,12 @@ export default function (pi: ExtensionAPI) {
               // Only send content array if we actually have images, otherwise just text
               const hasImages = content.some((c: any) => c.type === "image");
               if (hasImages) {
-                pi.sendUserMessage(content);
+                a.sendUserMessage(content);
               } else {
-                pi.sendUserMessage(command.message);
+                a.sendUserMessage(command.message);
               }
             } else {
-              pi.sendUserMessage(command.message);
+              a.sendUserMessage(command.message);
             }
           }
           sendTo(ws, success("prompt"));
@@ -512,13 +698,17 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "steer": {
-          pi.sendUserMessage(command.message, { deliverAs: "steer" });
+          const a = requireApi("steer");
+          if (!a) break;
+          a.sendUserMessage(command.message, { deliverAs: "steer" });
           sendTo(ws, success("steer"));
           break;
         }
 
         case "follow_up": {
-          pi.sendUserMessage(command.message, { deliverAs: "followUp" });
+          const a = requireApi("follow_up");
+          if (!a) break;
+          a.sendUserMessage(command.message, { deliverAs: "followUp" });
           sendTo(ws, success("follow_up"));
           break;
         }
@@ -538,10 +728,10 @@ export default function (pi: ExtensionAPI) {
           const model = ctx.model;
           const state = {
             model,
-            thinkingLevel: pi.getThinkingLevel(),
+            thinkingLevel: api?.getThinkingLevel() ?? "off",
             isStreaming: !ctx.isIdle(),
             sessionFile: ctx.sessionManager.getSessionFile(),
-            sessionName: pi.getSessionName(),
+            sessionName: api?.getSessionName() ?? "",
             autoCompactionEnabled: true, // Extension can't easily check this
           };
           sendTo(ws, success("get_state", state));
@@ -575,11 +765,104 @@ export default function (pi: ExtensionAPI) {
           break;
         }
 
+        // ─── API keys (auth.json) ───
+        //
+        // Why: GUI-launched Pi Studio (Finder/dock) does not inherit
+        // ANTHROPIC_API_KEY etc. from the user's login shell, and we
+        // deliberately removed the brittle login-shell env-harvest path in
+        // commit 8b1f5e4. The user therefore needs an in-app way to write
+        // their API key into ~/.pi/agent/auth.json once, which then sticks
+        // across runs (same file format pi's `/login` writes).
+        //
+        // These handlers expose a minimal CRUD over auth.json scoped to the
+        // built-in providers we know about. OAuth providers are deliberately
+        // excluded — they require a browser round-trip we don't support yet
+        // from the desktop UI; users who need OAuth should run `pi /login`
+        // from a terminal.
+        case "list_auth_status": {
+          // Use the cached process-scoped registry when available so this
+          // works even if the user opens Settings → Authentication before
+          // pi's first session_start has fired, or between sessions during
+          // a new_session / switch_session / fork reload. See the
+          // EmbeddedServerGlobal.modelRegistry comment for the full why.
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(ws, error("list_auth_status", "Model registry not ready yet — try again in a moment."));
+            break;
+          }
+          // Collect unique providers from all known models (built-in + custom).
+          const allModels = registry.getAll();
+          const providerNames = new Set<string>();
+          for (const m of allModels) providerNames.add(m.provider);
+          const providers = Array.from(providerNames).sort().map((p) => {
+            const status = registry.getProviderAuthStatus(p);
+            return {
+              provider: p,
+              displayName: registry.getProviderDisplayName(p),
+              configured: status.configured,
+              source: status.source, // "stored" | "environment" | "runtime" | "fallback" | undefined
+              label: status.label,
+            };
+          });
+          sendTo(ws, success("list_auth_status", { providers }));
+          break;
+        }
+
+        case "set_api_key": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(ws, error("set_api_key", "Model registry not ready yet — try again in a moment."));
+            break;
+          }
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const apiKey = typeof command.apiKey === "string" ? command.apiKey.trim() : "";
+          if (!provider) {
+            sendTo(ws, error("set_api_key", "provider is required"));
+            break;
+          }
+          if (!apiKey) {
+            sendTo(ws, error("set_api_key", "apiKey is required"));
+            break;
+          }
+          try {
+            registry.authStorage.set(provider, { type: "api_key", key: apiKey });
+            // Refresh so getAvailable() picks up the new key without restart.
+            registry.refresh();
+            sendTo(ws, success("set_api_key", { provider }));
+          } catch (e: any) {
+            sendTo(ws, error("set_api_key", e?.message || String(e)));
+          }
+          break;
+        }
+
+        case "remove_api_key": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(ws, error("remove_api_key", "Model registry not ready yet — try again in a moment."));
+            break;
+          }
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          if (!provider) {
+            sendTo(ws, error("remove_api_key", "provider is required"));
+            break;
+          }
+          try {
+            registry.authStorage.remove(provider);
+            registry.refresh();
+            sendTo(ws, success("remove_api_key", { provider }));
+          } catch (e: any) {
+            sendTo(ws, error("remove_api_key", e?.message || String(e)));
+          }
+          break;
+        }
+
         case "set_model": {
           if (!ctx) {
             sendTo(ws, error("set_model", "No context available"));
             break;
           }
+          const a = requireApi("set_model");
+          if (!a) break;
           const models = await ctx.modelRegistry.getAvailable();
           const model = models.find(
             (m: any) => m.provider === command.provider && m.id === command.modelId
@@ -588,7 +871,7 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("set_model", `Model not found: ${command.provider}/${command.modelId}`));
             break;
           }
-          const ok = await pi.setModel(model);
+          const ok = await a.setModel(model);
           if (!ok) {
             sendTo(ws, error("set_model", "No API key for this model"));
             break;
@@ -604,6 +887,8 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, success("cycle_model", null));
             break;
           }
+          const a = requireApi("cycle_model");
+          if (!a) break;
           const availModels = await ctx.modelRegistry.getAvailable();
           const currentModel = ctx.model;
           if (!currentModel || availModels.length <= 1) {
@@ -614,27 +899,31 @@ export default function (pi: ExtensionAPI) {
             (m: any) => m.provider === currentModel.provider && m.id === currentModel.id
           );
           const nextModel = availModels[(idx + 1) % availModels.length];
-          await pi.setModel(nextModel);
+          await a.setModel(nextModel);
           sendTo(ws, success("cycle_model", {
             model: nextModel,
-            thinkingLevel: pi.getThinkingLevel(),
+            thinkingLevel: a.getThinkingLevel(),
           }));
           break;
         }
 
         // ─── Thinking ───
         case "cycle_thinking_level": {
+          const a = requireApi("cycle_thinking_level");
+          if (!a) break;
           const levels = ["off", "minimal", "low", "medium", "high"];
-          const current = pi.getThinkingLevel();
+          const current = a.getThinkingLevel();
           const idx = levels.indexOf(current);
           const next = levels[(idx + 1) % levels.length];
-          pi.setThinkingLevel(next as any);
+          a.setThinkingLevel(next as any);
           sendTo(ws, success("cycle_thinking_level", { level: next }));
           break;
         }
 
         case "set_thinking_level": {
-          pi.setThinkingLevel(command.level);
+          const a = requireApi("set_thinking_level");
+          if (!a) break;
+          a.setThinkingLevel(command.level);
           sendTo(ws, success("set_thinking_level"));
           break;
         }
@@ -672,7 +961,9 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("set_session_name", "Name cannot be empty"));
             break;
           }
-          pi.setSessionName(name);
+          const a = requireApi("set_session_name");
+          if (!a) break;
+          a.setSessionName(name);
           sendTo(ws, success("set_session_name"));
           break;
         }
@@ -825,7 +1116,7 @@ export default function (pi: ExtensionAPI) {
       // still reads it via the old name, and renaming is a churn-without-
       // benefit change scoped out of this migration.
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", mode: "embedded", mirrorUrl: localUrl }));
+      res.end(JSON.stringify({ status: "ok", mode: "embedded", mirrorUrl: globalState.localUrl }));
       return;
     }
 
@@ -1166,10 +1457,13 @@ export default function (pi: ExtensionAPI) {
           const command = JSON.parse(body);
           // Create a fake WebSocket-like object to capture the response
           const responsePromise = new Promise<any>((resolve) => {
-            const fakeWs = {
-              readyState: WebSocket.OPEN,
+            const fakeWs: UnifiedWS = {
+              readyState: WS_OPEN,
               send: (data: string) => resolve(JSON.parse(data)),
-            } as any;
+              close: () => {},
+              terminate: () => {},
+              ping: () => {},
+            };
             handleCommand(fakeWs, command);
           });
           const response = await responsePromise;
@@ -1348,6 +1642,46 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // Wraps `parseSessionFile` with an mtime+size keyed in-memory cache so we
+  // only re-parse files that have actually changed since the last call.
+  // A `null` parse result (file rejected by the trivial-session filter) is
+  // also cached so we don't keep retrying. Also returns the stat so callers
+  // can avoid a second `fs.statSync`.
+  async function parseSessionFileCached(filePath: string, readline: any) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      globalState.sessionHeaderCache.delete(filePath);
+      return null;
+    }
+
+    const cached = globalState.sessionHeaderCache.get(filePath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return { parsed: cached.value, stat };
+    }
+
+    const parsed = await parseSessionFile(filePath, readline);
+    globalState.sessionHeaderCache.set(filePath, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      value: parsed,
+    });
+    return { parsed, stat };
+  }
+
+  // Drop cache entries for files that no longer exist under SESSIONS_DIR.
+  // Cheap (single iteration over the Map keys) and bounds memory growth in
+  // long-lived pi processes where users archive / delete sessions.
+  function pruneSessionCaches(liveFiles: Set<string>) {
+    for (const key of globalState.sessionHeaderCache.keys()) {
+      if (!liveFiles.has(key)) globalState.sessionHeaderCache.delete(key);
+    }
+    for (const key of globalState.sessionMetricsCache.keys()) {
+      if (!liveFiles.has(key)) globalState.sessionMetricsCache.delete(key);
+    }
+  }
+
   async function serveSessionsList(res: http.ServerResponse) {
     try {
       if (!fs.existsSync(SESSIONS_DIR)) {
@@ -1358,44 +1692,56 @@ export default function (pi: ExtensionAPI) {
 
       const readline = await import("node:readline");
       const dirEntries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
-      const projects: any[] = [];
+      const liveFiles = new Set<string>();
 
+      // Walk the tree first to build the (dir, files) work list and the
+      // live-file set used for cache pruning. Parsing then happens in
+      // parallel per project — most cost is fs.read on cold cache, and
+      // bun + node handle a few hundred concurrent stream reads cheaply.
+      const projectWork: { dirName: string; projectDir: string; files: string[]; decodedPath: string }[] = [];
       for (const dir of dirEntries) {
         if (!dir.isDirectory()) continue;
-
         const projectDir = path.join(SESSIONS_DIR, dir.name);
         const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
         const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+        for (const f of files) liveFiles.add(path.join(projectDir, f));
+        projectWork.push({ dirName: dir.name, projectDir, files, decodedPath });
+      }
 
+      pruneSessionCaches(liveFiles);
+
+      const projects = (await Promise.all(projectWork.map(async ({ dirName, projectDir, files, decodedPath }) => {
         const sessions: any[] = [];
-
-        for (const file of files) {
+        const results = await Promise.all(files.map(async (file) => {
+          const filePath = path.join(projectDir, file);
           try {
-            const filePath = path.join(projectDir, file);
-            const parsed = await parseSessionFile(filePath, readline);
-            if (parsed) {
-              const stat = fs.statSync(filePath);
-              sessions.push({ ...parsed, file, filePath, mtime: stat.mtimeMs });
-            }
-          } catch { /* skip */ }
+            const result = await parseSessionFileCached(filePath, readline);
+            if (!result?.parsed) return null;
+            return { ...result.parsed, file, filePath, mtime: result.stat.mtimeMs };
+          } catch {
+            return null;
+          }
+        }));
+        for (const r of results) {
+          if (r) sessions.push(r);
         }
 
         sessions.sort((a, b) => b.mtime - a.mtime);
 
-        if (sessions.length > 0) {
-          // Directory-name decoding is lossy for paths containing "-" (e.g. "pi-mono").
-          // Prefer the real cwd recorded in session headers when available.
-          const cwdCounts = new Map<string, number>();
-          for (const s of sessions) {
-            if (!s.cwd) continue;
-            cwdCounts.set(s.cwd, (cwdCounts.get(s.cwd) || 0) + 1);
-          }
-          const inferredPath = Array.from(cwdCounts.entries())
-            .sort((a, b) => b[1] - a[1])[0]?.[0] || decodedPath;
+        if (sessions.length === 0) return null;
 
-          projects.push({ path: inferredPath, dirName: dir.name, sessions });
+        // Directory-name decoding is lossy for paths containing "-" (e.g. "pi-mono").
+        // Prefer the real cwd recorded in session headers when available.
+        const cwdCounts = new Map<string, number>();
+        for (const s of sessions) {
+          if (!s.cwd) continue;
+          cwdCounts.set(s.cwd, (cwdCounts.get(s.cwd) || 0) + 1);
         }
-      }
+        const inferredPath = Array.from(cwdCounts.entries())
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || decodedPath;
+
+        return { path: inferredPath, dirName, sessions };
+      }))).filter((p): p is { path: string; dirName: string; sessions: any[] } => p !== null);
 
       projects.sort((a, b) => {
         const aTime = a.sessions[0]?.mtime || 0;
@@ -1609,7 +1955,30 @@ export default function (pi: ExtensionAPI) {
         const files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
         for (const file of files) {
           const filePath = path.join(projectDir, file);
-          const parsed = await parseSessionMetrics(filePath, readline);
+          // Cache-aware fetch: cost dashboard scans every session file in the
+          // tree, which is dramatically more expensive than `/api/sessions`
+          // because it parses every JSONL line (not just the header). The
+          // mtime+size key means re-opening the dashboard reuses prior work
+          // for any session that hasn't been written to since.
+          let stat: fs.Stats;
+          try {
+            stat = fs.statSync(filePath);
+          } catch {
+            globalState.sessionMetricsCache.delete(filePath);
+            continue;
+          }
+          let parsed: any;
+          const cached = globalState.sessionMetricsCache.get(filePath);
+          if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+            parsed = cached.value;
+          } else {
+            parsed = await parseSessionMetrics(filePath, readline);
+            globalState.sessionMetricsCache.set(filePath, {
+              mtimeMs: stat.mtimeMs,
+              size: stat.size,
+              value: parsed,
+            });
+          }
           if (!parsed) continue;
 
           const sessionCwdResolved = (() => {
@@ -1976,96 +2345,273 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ═══════════════════════════════════════
-  // Start server function (reusable)
+  // Start server function (reusable across extension reloads)
   // ═══════════════════════════════════════
+  //
+  // The HTTP/WS server is process-scoped (see `globalState`). On the first
+  // session_start of the pi process we actually create and bind the server.
+  // On every subsequent session_start (after new_session / switch_session /
+  // fork → extension reload), we just re-publish the current session's
+  // command handler / state-snapshot builder / latest ctx into the global so
+  // the long-lived `wss.on("connection", …)` callback below dispatches to
+  // the new session. This is what keeps the WebView's URL alive across
+  // session changes.
   function startServer(ctx: ExtensionContext) {
-    if (server) return; // Already running
+    // Always (re)publish per-session bindings — these are what every
+    // request and WS message dispatches through.
+    globalState.handleCommand = handleCommand;
+    globalState.buildStateSnapshot = buildStateSnapshot;
+    globalState.getLatestCtx = () => latestCtx;
+    globalState.getApi = () => pi;
 
-    server = http.createServer(serveStaticFile);
-    wss = new WebSocketServer({ noServer: true });
+    // Re-register the instance entry with the *current* session file so
+    // `/api/projects` and `/api/instances` report the right session.
+    if (globalState.server) {
+      const port = globalState.server.port;
+      const sessionFile = ctx.sessionManager.getSessionFile() || "";
+      registerInstance(port, sessionFile, ctx.cwd || process.cwd());
+      return;
+    }
+
+    // ─── Common: per-client lifecycle ────────────────────────────────────
+    //
+    // Both the Bun.serve and node http+ws paths funnel new connections
+    // through `onClientConnected` so the rest of the system (handleCommand,
+    // broadcast, heartbeat) doesn't care which runtime is underneath.
+    function onClientConnected(ws: UnifiedWS) {
+      console.log("[Embedded] Browser client connected");
+      globalState.clients.add(ws);
+      ws.isAlive = true;
+
+      sendTo(ws, { type: "state", isStreaming: false, mode: "embedded" });
+
+      const currentCtx = globalState.getLatestCtx?.() ?? null;
+      const snapshotBuilder = globalState.buildStateSnapshot;
+      if (currentCtx && snapshotBuilder) {
+        snapshotBuilder(currentCtx).then((snapshot) => {
+          sendTo(ws, snapshot);
+        }).catch((err) => {
+          console.error("[Embedded] Failed to build initial snapshot:", err);
+        });
+      }
+    }
+
+    function onClientMessage(ws: UnifiedWS, raw: string | ArrayBuffer | Buffer) {
+      try {
+        const text = typeof raw === "string"
+          ? raw
+          : raw instanceof ArrayBuffer
+            ? Buffer.from(raw).toString("utf8")
+            : raw.toString();
+        const command = JSON.parse(text);
+        const dispatch = globalState.handleCommand;
+        if (dispatch) {
+          dispatch(ws, command);
+        } else {
+          sendTo(ws, { type: "response", command: command?.type || "unknown", success: false, error: "No active session", id: command?.id });
+        }
+      } catch (e) {
+        console.error("[Embedded] Failed to parse client message:", e);
+      }
+    }
+
+    function onClientClosed(ws: UnifiedWS) {
+      console.log("[Embedded] Browser client disconnected");
+      globalState.clients.delete(ws);
+    }
+
+    // ─── Heartbeat (process-scoped, identical across runtimes) ───────────
+    //
+    // Removes stale clients (the WebView usually closes cleanly, but
+    // ungraceful disconnects need a reaper). The Bun ServerWebSocket has
+    // `.ping()` but not `.terminate()` — we fall back to `.close()` in the
+    // wrapper exposed via UnifiedWS.
+    globalState.heartbeatTimer = setInterval(() => {
+      for (const client of globalState.clients) {
+        if (client.readyState !== WS_OPEN) {
+          globalState.clients.delete(client);
+          continue;
+        }
+        if (!client.isAlive) {
+          try { client.terminate(); } catch {}
+          globalState.clients.delete(client);
+          continue;
+        }
+        client.isAlive = false;
+        try { client.ping(); } catch {}
+      }
+    }, 20000);
+
+    // ─── Path A: Bun runtime ─────────────────────────────────────────────
+    //
+    // The bundled `pi` is compiled with `bun build --compile`, where the
+    // node-style `http.createServer().on("upgrade", ...)` path silently
+    // drops `socket.write` and the handshake never completes. `Bun.serve`
+    // has a native upgrade path that works.
+    if (HAS_BUN_SERVE) {
+      const tryBunListen = (port: number, maxAttempts = 10) => {
+        try {
+          const bunServer: any = Bun.serve({
+            port,
+            hostname: "127.0.0.1",
+            // Sustained streaming responses (e.g. SSE / long polls hitting
+            // our REST surface) should not be killed by Bun's default 10s
+            // idle timeout. 0 = disable.
+            idleTimeout: 0,
+            fetch: bunFetchHandler,
+            websocket: {
+              open(ws: any) {
+                onClientConnected(ws as UnifiedWS);
+              },
+              message(ws: any, msg: string | Buffer) {
+                onClientMessage(ws as UnifiedWS, msg);
+              },
+              close(ws: any) {
+                onClientClosed(ws as UnifiedWS);
+              },
+              drain() { /* no-op; backpressure is fine for our small JSON messages */ },
+              // Bun marks the client as alive on any pong it receives; we
+              // expose a hook to flip the heartbeat sentinel.
+              pong(ws: any) {
+                (ws as UnifiedWS).isAlive = true;
+              },
+            },
+          });
+          onListening(port);
+          globalState.server = {
+            port,
+            close: () => { try { bunServer.stop?.(true); } catch {} },
+            nodeServer: null,
+            bunServer,
+          };
+        } catch (err: any) {
+          const msg = String(err?.message || err);
+          // Bun surfaces EADDRINUSE as both `err.code === "EADDRINUSE"`
+          // and as a message containing the literal string, depending on
+          // version. Check both.
+          if ((err?.code === "EADDRINUSE" || msg.includes("EADDRINUSE")) && port < PORT + maxAttempts) {
+            console.log(`[Embedded] Port ${port} in use, trying ${port + 1}...`);
+            tryBunListen(port + 1, maxAttempts);
+          } else {
+            console.error(`[Embedded] Failed to start Bun server:`, msg);
+          }
+        }
+      };
+
+      // Adapt our existing node-style `serveStaticFile(req, res)` API to
+      // Bun's `fetch(Request) => Response` shape. The WS upgrade has to
+      // short-circuit *before* the adapter runs, because once `req.body`
+      // is consumed by the adapter the upgrade window is gone.
+      //
+      // Static asset requests bypass the adapter entirely: Bun's native
+      // `Bun.file(path)` already supports byte ranges, content-type
+      // inference, and zero-copy streaming, and the adapter's buffered
+      // body approach would defeat all of that for the 200+ KB JS bundle.
+      async function bunFetchHandler(req: Request, server: any): Promise<Response | undefined> {
+        const url = new URL(req.url);
+        if (url.pathname === "/ws") {
+          if (server.upgrade(req)) return undefined;
+          return new Response("WebSocket upgrade failed", { status: 400 });
+        }
+        if (!url.pathname.startsWith("/api/")) {
+          return serveStaticAssetBun(url);
+        }
+        return runNodeStyleHandler(req);
+      }
+
+      // Native Bun static serving — mirrors the routing in `serveStaticFile`
+      // (pretty `/` and `/cost` paths, directory traversal guard, 404 on
+      // missing files) but reads via `Bun.file` so large assets stream
+      // straight from disk without going through our buffering adapter.
+      async function serveStaticAssetBun(url: URL): Promise<Response> {
+        let urlPath = url.pathname;
+        if (urlPath === "/") urlPath = "/index.html";
+        if (urlPath === "/cost" || urlPath === "/cost/") urlPath = "/cost.html";
+
+        const filePath = path.join(STATIC_DIR, urlPath);
+        // Guard against directory-traversal. We do this with the resolved
+        // filesystem path rather than the URL path so symlink shenanigans
+        // can't escape STATIC_DIR either.
+        if (!filePath.startsWith(STATIC_DIR)) {
+          return new Response("Forbidden", { status: 403 });
+        }
+
+        try {
+          const file = Bun.file(filePath);
+          if (!(await file.exists())) {
+            return new Response("Not Found", { status: 404 });
+          }
+          const ext = path.extname(filePath).toLowerCase();
+          const contentType = MIME_TYPES[ext] || file.type || "application/octet-stream";
+          return new Response(file, { headers: { "Content-Type": contentType } });
+        } catch (err: any) {
+          return new Response(`Internal error: ${err?.message || String(err)}`, { status: 500 });
+        }
+      }
+
+      tryBunListen(PORT);
+      return;
+    }
+
+    // ─── Path B: Node runtime fallback (dev/jiti) ────────────────────────
+    //
+    // Real Node.js doesn't have the bun upgrade bug, so the original
+    // ws-on-http.createServer path is fine here. We keep it so
+    // `tauri dev` (which loads the .ts source via jiti and node) still
+    // works.
+    const server = http.createServer((req, res) => serveStaticFile(req, res));
+    const wss = new WebSocketServer({ noServer: true });
+    globalState.wss = wss;
 
     server.on("upgrade", (request, socket, head) => {
       if (request.url === "/ws") {
-        wss!.handleUpgrade(request, socket, head, (ws) => {
-          wss!.emit("connection", ws, request);
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit("connection", ws, request);
         });
       } else {
         socket.destroy();
       }
     });
 
-    wss.on("connection", (ws) => {
-      console.log("[Embedded] Browser client connected");
-      clients.add(ws);
-      (ws as any).isAlive = true;
+    wss.on("connection", (ws: WebSocket) => {
+      // The `ws` library's WebSocket is structurally compatible with
+      // UnifiedWS once we add the `isAlive` flag, except it uses
+      // EventEmitter rather than fields for delivery. Wire those events
+      // into the shared lifecycle hooks.
+      const wrapped = ws as unknown as UnifiedWS;
+      onClientConnected(wrapped);
 
       ws.on("pong", () => {
-        (ws as any).isAlive = true;
+        wrapped.isAlive = true;
       });
-
-      // Send initial state
-      sendTo(ws, { type: "state", isStreaming: false, mode: "embedded" });
-
-      // Immediately send state snapshot
-      if (latestCtx) {
-        buildStateSnapshot(latestCtx).then((snapshot) => {
-          sendTo(ws, snapshot);
-        });
-      }
-
       ws.on("message", (data) => {
-        try {
-          const command = JSON.parse(data.toString());
-          handleCommand(ws, command);
-        } catch (e) {
-          console.error("[Embedded] Failed to parse client message:", e);
-        }
+        onClientMessage(wrapped, data as Buffer);
       });
-
       ws.on("close", () => {
-        console.log("[Embedded] Browser client disconnected");
-        clients.delete(ws);
+        onClientClosed(wrapped);
       });
-
       ws.on("error", (e) => {
         console.error("[Embedded] Client error:", e);
-        clients.delete(ws);
+        globalState.clients.delete(wrapped);
       });
     });
 
-    // Heartbeat removes stale clients (a Pi Studio WebView closing the
-    // window typically triggers a clean close, but we keep this for
-    // robustness against ungraceful disconnects).
-    heartbeatTimer = setInterval(() => {
-      for (const client of clients) {
-        if (client.readyState !== WebSocket.OPEN) {
-          clients.delete(client);
-          continue;
-        }
-
-        if (!(client as any).isAlive) {
-          try { client.terminate(); } catch {}
-          clients.delete(client);
-          continue;
-        }
-
-        (client as any).isAlive = false;
-        try { client.ping(); } catch {}
-      }
-    }, 20000);
-
     const tryListen = (port: number, maxAttempts = 10) => {
       // Bind to 127.0.0.1 only — Pi Studio is a local desktop app and
-      // never needs to be reachable from other hosts. This sidesteps an
-      // entire class of "my firewall popped up asking to allow Pi Studio"
-      // and "another machine on my LAN can see my agent" footguns.
-      server!.listen(port, "127.0.0.1", () => {
+      // never needs to be reachable from other hosts.
+      server.listen(port, "127.0.0.1", () => {
         onListening(port);
+        globalState.server = {
+          port,
+          close: () => { try { server.close(); } catch {} },
+          nodeServer: server,
+          bunServer: null,
+        };
       });
-      server!.once("error", (err: any) => {
+      server.once("error", (err: any) => {
         if (err.code === "EADDRINUSE" && port < PORT + maxAttempts) {
           console.log(`[Embedded] Port ${port} in use, trying ${port + 1}...`);
-          server!.removeAllListeners("error");
+          server.removeAllListeners("error");
           tryListen(port + 1, maxAttempts);
         } else {
           console.error(`[Embedded] Failed to start server:`, err.message);
@@ -2073,32 +2619,172 @@ export default function (pi: ExtensionAPI) {
       });
     };
 
-    const onListening = (port: number) => {
-      localUrl = `http://127.0.0.1:${port}`;
-      console.log(`[Embedded] Pi Studio embedded server running on ${localUrl}`);
+    function onListening(port: number) {
+      globalState.localUrl = `http://127.0.0.1:${port}`;
+      console.log(`[Embedded] Pi Studio embedded server running on ${globalState.localUrl}`);
       ctx.ui.setStatus("embedded", `Embedded: 127.0.0.1:${port}`);
-
-      // Register this instance so `/api/projects` can mark workspaces as active.
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
       registerInstance(port, sessionFile, ctx.cwd || process.cwd());
-    };
+    }
 
     tryListen(PORT);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Request adapter: convert a `Request` (web-fetch) into the node-style
+  // `(req, res)` pair our existing handlers expect, then run `serveStaticFile`
+  // and resolve to the final `Response`.
+  //
+  // Why we keep the node-style API:
+  //   - `handleApiRoute` and friends are 1000+ lines of hand-rolled
+  //     `res.writeHead(...)` / `res.end(...)` / `req.on("data", ...)`
+  //     code. Rewriting all of it to return Response objects would be a
+  //     much larger change and a much bigger risk of regression than
+  //     the small adapter below.
+  //
+  // Things to know about this adapter:
+  //   - We collect the body up-front (`await req.text()`) and feed it
+  //     through synthetic `data` + `end` events. The request body sizes
+  //     we deal with (RPC commands, agent-config saves) are tiny, so the
+  //     buffering overhead is negligible.
+  //   - We don't try to support streaming responses through this adapter:
+  //     all our endpoints either return JSON in one shot or stream a
+  //     session JSONL file fully into memory before writing. If a future
+  //     endpoint needs true response streaming, it should branch on
+  //     HAS_BUN_SERVE and return a Bun Response with a ReadableStream.
+  // ═══════════════════════════════════════════════════════════════════════
+  async function runNodeStyleHandler(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const bodyText = req.method !== "GET" && req.method !== "HEAD" ? await req.text() : "";
+
+    return await new Promise<Response>((resolve) => {
+      const headers: Record<string, string> = {};
+      req.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+
+      // Build a minimal IncomingMessage-shaped object. Only the fields
+      // our handlers actually touch are emulated; everything else is a
+      // sealed `undefined` to fail loudly if a handler ever reaches for
+      // something Bun.serve can't provide.
+      const dataListeners: Array<(chunk: any) => void> = [];
+      const endListeners: Array<() => void> = [];
+      const reqLike: any = {
+        url: url.pathname + url.search,
+        method: req.method,
+        headers,
+        // Only `data`/`end` are consumed by our POST handlers — see
+        // /api/rpc, /api/projects/launch, /api/agent-config (PUT), etc.
+        on(event: string, fn: any) {
+          if (event === "data") dataListeners.push(fn);
+          else if (event === "end") endListeners.push(fn);
+          return reqLike;
+        },
+      };
+
+      let resolved = false;
+      let statusCode = 200;
+      let resHeaders: Record<string, string> = {};
+      let bodyChunks: Array<Buffer> = [];
+      const resLike: any = {
+        setHeader(name: string, value: string) {
+          resHeaders[name] = value;
+        },
+        writeHead(code: number, maybeHeaders?: Record<string, string>) {
+          statusCode = code;
+          if (maybeHeaders) {
+            for (const [k, v] of Object.entries(maybeHeaders)) {
+              resHeaders[k] = v;
+            }
+          }
+        },
+        write(chunk: any) {
+          if (chunk == null) return;
+          bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        },
+        end(chunk?: any) {
+          if (resolved) return;
+          resolved = true;
+          if (chunk != null) {
+            bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
+          const body = Buffer.concat(bodyChunks);
+          resolve(new Response(body, { status: statusCode, headers: resHeaders }));
+        },
+      };
+
+      // Special case: session JSONL streaming. `serveSessionFile` uses
+      // `fs.createReadStream(...).pipe(res)`. Our adapter doesn't
+      // implement pipe, so emulate it with `on("data")`+`on("end")`.
+      // We attach the pipe shim only when the handler tries to use it.
+      resLike.pipe = undefined;
+      (resLike as any).on = (_event: string, _fn: any) => resLike;
+
+      try {
+        serveStaticFile(reqLike, resLike);
+      } catch (err: any) {
+        if (!resolved) {
+          resolved = true;
+          resolve(new Response(`Internal error: ${err?.message || String(err)}`, { status: 500 }));
+        }
+      }
+
+      // Deliver the buffered body to the handler. Doing this *after*
+      // calling `serveStaticFile` ensures the handler has already
+      // registered its `data`/`end` listeners.
+      if (bodyText) {
+        for (const fn of dataListeners) fn(Buffer.from(bodyText));
+      }
+      for (const fn of endListeners) fn();
+    });
   }
 
   // ═══════════════════════════════════════
   // Auto-start on session begin
   // ═══════════════════════════════════════
   pi.on("session_start", async (_event, ctx) => {
-    latestCtx = ctx;
+    rememberCtx(ctx);
     startServer(ctx);
+
+    // Push a fresh state snapshot to every already-connected client.
+    //
+    // Why: pi reloads this extension on `switch_session` / `new_session` /
+    // `fork`, which fires `session_shutdown` on the old instance and
+    // `session_start` on the new one. The HTTP/WS server is process-scoped
+    // and survives that reload (see `EmbeddedServerGlobal`), so the
+    // WebView's existing WS connection stays open across the swap. Without
+    // an explicit re-broadcast, those clients would keep showing the old
+    // session's entries — `buildStateSnapshot` is otherwise only sent on
+    // *new* connections in the `wss.on("connection", …)` handler above.
+    //
+    // We send the same `mirror_sync` payload `handleMirrorSync` already
+    // knows how to consume, so the UI replays history, updates the model
+    // label, and re-anchors `mirrorActiveSessionFile` to the new session.
+    if (globalState.clients.size === 0) return;
+    try {
+      const snapshot = await buildStateSnapshot(ctx);
+      broadcast(snapshot);
+    } catch (err) {
+      console.error("[Embedded] Failed to broadcast post-switch snapshot:", err);
+    }
   });
 
   // ═══════════════════════════════════════
-  // Cleanup on shutdown
+  // Per-session teardown (NOT process shutdown — see EmbeddedServerGlobal)
   // ═══════════════════════════════════════
   pi.on("session_shutdown", async () => {
-    stopServer();
-    console.log("[Embedded] Server shut down");
+    // Drop our captured ctx so we don't accidentally use a torn-down session
+    // before the next instance re-publishes its bindings.
+    latestCtx = null;
+    // Tear down the global pointers IFF they still point at *this* instance,
+    // so any WS messages that arrive in the gap before the next
+    // session_start fail cleanly with "No active session" instead of hitting
+    // a stale handler. We use identity on the bound `handleCommand` closure
+    // to detect "still this instance".
+    if (globalState.handleCommand === handleCommand) {
+      globalState.handleCommand = null;
+      globalState.buildStateSnapshot = null;
+      globalState.getLatestCtx = null;
+      globalState.getApi = null;
+    }
+    console.log("[Embedded] Session shutdown (server stays up)");
   });
 }

@@ -1595,6 +1595,132 @@ body {
   gap: 12px;
 }
 
+.settings-help {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0 0 12px 0;
+}
+
+.settings-help code {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-glass);
+}
+
+.settings-api-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-api-keys-loading,
+.settings-api-keys-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 8px 0;
+}
+
+.api-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.api-key-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.api-key-row-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.api-key-row-status {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.api-key-row-status.configured {
+  color: var(--accent, #4caf50);
+}
+
+.api-key-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.api-key-row-actions button {
+  padding: 4px 10px;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.api-key-row-actions button:hover {
+  border-color: var(--accent, #4caf50);
+}
+
+.api-key-row-actions button.danger:hover {
+  border-color: #e53935;
+  color: #e53935;
+}
+
+.api-key-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.api-key-editor input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-base, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  box-sizing: border-box;
+}
+
+.api-key-editor input:focus {
+  outline: none;
+  border-color: var(--accent, #4caf50);
+}
+
+.api-key-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.api-key-editor-error {
+  font-size: 11px;
+  color: #e53935;
+}
+
 .settings-label {
   font-size: 13px;
   color: var(--text-secondary);

@@ -13,6 +13,7 @@ import { FileBrowser } from './file-browser.js';
 import { Launcher } from './launcher.js';
 import {
   startNewProjectChat,
+  openProjectWorkspace,
   openFolderAsWorkspace,
   startInWindowNewSession,
 } from './workspace-actions.js';
@@ -948,6 +949,25 @@ function openModelDropdown() {
   function renderItems(filter) {
     itemsContainer.innerHTML = '';
     const query = (filter || '').toLowerCase();
+    // Empty-state: no API keys configured anywhere. Surface this loudly
+    // instead of leaving the dropdown blank — empty dropdowns look like
+    // a hung load, not a setup problem.
+    if (availableModels.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'model-dropdown-empty';
+      empty.innerHTML = `
+        <div style="padding:14px;color:var(--text-dim);font-size:12px;line-height:1.5">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:6px">No models available</div>
+          <div>No API keys configured. Set a key in Settings &rarr; Authentication.</div>
+          <button type="button" class="btn-primary" style="margin-top:10px">Open Settings</button>
+        </div>`;
+      empty.querySelector('button').addEventListener('click', () => {
+        closeModelDropdown();
+        openSettings().then(() => selectSettingsTab('auth')).catch(() => {});
+      });
+      itemsContainer.appendChild(empty);
+      return;
+    }
     availableModels.forEach(m => {
       const shortName = m.id.replace(/-\d{8}$/, '');
       const providerStr = m.provider || '';
@@ -1162,21 +1182,28 @@ async function resetUiForNewSession() {
 }
 
 async function newSession() {
+  if (window.tauriNative) {
+    // In Pi Studio, "New Session" spawns a *new* pi process in a new OS
+    // window for the current cwd. The current window/session keeps running
+    // so the user can run multiple agent tasks in parallel against the
+    // same workspace. See workspace-actions.js for the rationale.
+    await startInWindowNewSession({
+      tauriNative: window.tauriNative,
+      fetchInstances,
+      getCurrentPort,
+      renderError: (message) => messageRenderer.renderError(message),
+    });
+    return;
+  }
+
+  // Browser/dev fallback: classic in-place "new session" against the same
+  // pi process (no Tauri windows available in this mode).
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
-
-  if (window.tauriNative) {
-    const ok = await startInWindowNewSession({
-      tauriNative: window.tauriNative,
-      renderError: (message) => messageRenderer.renderError(message),
-    });
-    if (ok) await resetUiForNewSession();
-  } else {
-    await switchSession(null);
-    sidebar.clearActive();
-  }
+  await switchSession(null);
+  sidebar.clearActive();
 
   if (isMobile()) {
     sidebarEl.classList.add('collapsed');
@@ -1188,18 +1215,13 @@ async function newSession() {
 async function handleNewProjectChat(project) {
   if (workspaceLaunchInProgress) return;
   setWorkspaceLaunchInProgress(true);
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
-  updateCostDisplay();
-  updateTokenUsage();
   try {
+    // startNewProjectChat always spawns a fresh pi + window, so the
+    // current window/session is left untouched. We only reset the local
+    // cost counters when the user *navigates away* from this window.
     const launched = await startNewProjectChat({
       project,
       tauriNative: window.tauriNative,
-      fetchInstances,
-      getCurrentPort,
-      navigate: navigateInWindow,
-      onInWindowNewSession: resetUiForNewSession,
       renderError: (message) => messageRenderer.renderError(message),
     });
     if (!launched) return;
@@ -1687,6 +1709,9 @@ function selectSettingsTab(tabKey = 'general') {
   if (tabKey === 'configuration') {
     loadInlineConfigEditor();
   }
+  if (tabKey === 'auth') {
+    loadApiKeysPanel();
+  }
 }
 
 function formatPiVersionError(err, fallback = 'unknown error') {
@@ -1865,8 +1890,192 @@ toggleAuth.addEventListener('click', async () => {
   }
 });
 
+// ═══════════════════════════════════════
+// API Keys (Settings > Authentication)
+// ═══════════════════════════════════════
+//
+// Writes ~/.pi/agent/auth.json via the embedded server's set_api_key /
+// remove_api_key RPCs. Replaces the removed login-shell env-harvest path
+// (see commit 8b1f5e4): GUI-launched Pi Studio does not inherit ANTHROPIC_API_KEY
+// etc. from ~/.zshrc, so the dropdown was empty for users who only had keys
+// in their shell. This panel gives them a one-time setup that sticks.
+const apiKeysContainer = document.getElementById('settings-api-keys');
 
+async function loadApiKeysPanel() {
+  if (!apiKeysContainer) return;
+  apiKeysContainer.innerHTML = '<div class="settings-api-keys-loading">Loading providers…</div>';
+  const data = await rpcCommand({ type: 'list_auth_status' });
+  if (!data?.success || !Array.isArray(data.data?.providers)) {
+    // Surface the actual backend error (e.g. "Model registry not ready yet")
+    // instead of a generic message, and offer a Retry. The most common cause
+    // is opening the panel before pi's first session_start has populated the
+    // shared ModelRegistry — a single retry usually succeeds.
+    renderApiKeysPanelError(data?.error || 'Failed to load providers.');
+    return;
+  }
+  renderApiKeysPanel(data.data.providers);
+  // Refresh the model dropdown so a freshly-set key immediately shows up.
+  fetchModelInfo();
+}
 
+function renderApiKeysPanelError(message) {
+  apiKeysContainer.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-api-keys-empty';
+  const msg = document.createElement('div');
+  msg.textContent = message;
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.textContent = 'Retry';
+  retry.style.marginTop = '8px';
+  retry.addEventListener('click', () => loadApiKeysPanel());
+  wrap.appendChild(msg);
+  wrap.appendChild(retry);
+  apiKeysContainer.appendChild(wrap);
+}
+
+function renderApiKeysPanel(providers) {
+  apiKeysContainer.innerHTML = '';
+  if (providers.length === 0) {
+    apiKeysContainer.innerHTML = '<div class="settings-api-keys-empty">No providers known.</div>';
+    return;
+  }
+  for (const p of providers) {
+    apiKeysContainer.appendChild(buildApiKeyRow(p));
+  }
+}
+
+function buildApiKeyRow(p) {
+  const row = document.createElement('div');
+  row.className = 'api-key-row';
+  row.dataset.provider = p.provider;
+
+  const info = document.createElement('div');
+  info.className = 'api-key-row-info';
+  const name = document.createElement('div');
+  name.className = 'api-key-row-name';
+  name.textContent = p.displayName || p.provider;
+  const status = document.createElement('div');
+  status.className = `api-key-row-status${p.configured ? ' configured' : ''}`;
+  status.textContent = describeAuthStatus(p);
+  info.appendChild(name);
+  info.appendChild(status);
+
+  const actions = document.createElement('div');
+  actions.className = 'api-key-row-actions';
+  const setBtn = document.createElement('button');
+  setBtn.type = 'button';
+  setBtn.textContent = p.configured ? 'Update' : 'Set key';
+  setBtn.addEventListener('click', () => openApiKeyEditor(row, p));
+  actions.appendChild(setBtn);
+  if (p.configured && p.source === 'stored') {
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'danger';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => removeApiKey(p));
+    actions.appendChild(removeBtn);
+  }
+
+  row.appendChild(info);
+  row.appendChild(actions);
+  return row;
+}
+
+function describeAuthStatus(p) {
+  if (!p.configured) {
+    return 'Not configured';
+  }
+  switch (p.source) {
+    case 'stored': return 'Configured (auth.json)';
+    case 'environment': return `From environment (${p.label || 'env var'})`;
+    case 'runtime': return 'Runtime override';
+    case 'fallback': return 'Custom provider';
+    default: return 'Configured';
+  }
+}
+
+function openApiKeyEditor(row, p) {
+  // Replace the row with an inline editor; cancel restores the row.
+  const editor = document.createElement('div');
+  editor.className = 'api-key-editor';
+
+  const title = document.createElement('div');
+  title.className = 'api-key-row-name';
+  title.textContent = `${p.displayName || p.provider} API key`;
+  editor.appendChild(title);
+
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.placeholder = 'Paste API key…';
+  editor.appendChild(input);
+
+  const err = document.createElement('div');
+  err.className = 'api-key-editor-error';
+  err.style.display = 'none';
+  editor.appendChild(err);
+
+  const actions = document.createElement('div');
+  actions.className = 'api-key-editor-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'btn-primary';
+  saveBtn.textContent = 'Save';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(saveBtn);
+  editor.appendChild(actions);
+
+  row.replaceWith(editor);
+  requestAnimationFrame(() => input.focus());
+
+  const cancel = () => {
+    editor.replaceWith(row);
+  };
+  cancelBtn.addEventListener('click', cancel);
+
+  const save = async () => {
+    const key = input.value.trim();
+    if (!key) {
+      err.textContent = 'Key cannot be empty.';
+      err.style.display = '';
+      return;
+    }
+    saveBtn.disabled = true;
+    const resp = await rpcCommand(
+      { type: 'set_api_key', provider: p.provider, apiKey: key },
+      `Saving ${p.provider} key...`,
+    );
+    if (resp?.success) {
+      loadApiKeysPanel();
+    } else {
+      err.textContent = resp?.error || 'Failed to save key.';
+      err.style.display = '';
+      saveBtn.disabled = false;
+    }
+  };
+  saveBtn.addEventListener('click', save);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+}
+
+async function removeApiKey(p) {
+  const ok = confirm(`Remove stored API key for ${p.displayName || p.provider}?`);
+  if (!ok) return;
+  const resp = await rpcCommand(
+    { type: 'remove_api_key', provider: p.provider },
+    `Removing ${p.provider} key...`,
+  );
+  if (resp?.success) {
+    loadApiKeysPanel();
+  }
+}
 
 
 // ═══════════════════════════════════════
@@ -2220,16 +2429,17 @@ const launcher = new Launcher(launcherEl, async (projectPath) => {
   if (workspaceLaunchInProgress) return;
   setWorkspaceLaunchInProgress(true);
   try {
-    await startNewProjectChat({
+    // Launcher bubble click: open the workspace, but DON'T force a new
+    // chat. If a fresh pi has to be spawned it already boots into a new
+    // session; if an instance is already running for this cwd we attach
+    // to it as-is. This shaves the second extension reload that used to
+    // dominate launcher-to-ready latency.
+    await openProjectWorkspace({
       project: { path: projectPath, sessions: [] },
       tauriNative: window.tauriNative,
       fetchInstances,
       getCurrentPort,
       navigate: navigateInWindow,
-      onInWindowNewSession: async () => {
-        hideLauncher();
-        await resetUiForNewSession();
-      },
       renderError: (message) => messageRenderer.renderError(message),
     });
   } finally {
@@ -2310,7 +2520,6 @@ openFolderBtn?.addEventListener('click', async () => {
       fetchInstances,
       getCurrentPort,
       navigate: navigateInWindow,
-      onInWindowNewSession: resetUiForNewSession,
       renderError: (message) => messageRenderer.renderError(message),
     });
   } finally {
