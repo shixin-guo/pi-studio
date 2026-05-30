@@ -1140,6 +1140,23 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     messageInput.focus();
   }
+
+  // Cmd+N (macOS) / Ctrl+N (Windows/Linux) — Start a new chat session in
+  // the current workspace. Mirrors the header "+ New Session" button.
+  // We intentionally do NOT gate on isInInput() so the shortcut works
+  // even while the user is typing in the composer. Shift/Alt are excluded
+  // so we don't shadow Cmd+Shift+N (reserved for future "new window").
+  if (
+    (e.key === 'n' || e.key === 'N') &&
+    (e.metaKey || e.ctrlKey) &&
+    !e.shiftKey &&
+    !e.altKey
+  ) {
+    e.preventDefault();
+    newSession().catch((err) => {
+      messageRenderer.renderError(`Failed to start new session: ${err}`);
+    });
+  }
 });
 
 function isInInput() {
