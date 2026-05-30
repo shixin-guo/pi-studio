@@ -2679,7 +2679,7 @@ modelsConfigDocsLink?.addEventListener('click', (e) => {
   // endpoint shells out to `open <arg>` on macOS, which transparently
   // handles both file paths and https URLs. Falls back to window.open
   // when the embedded server is not running (dev `npm run dev:web`).
-  const url = 'https://github.com/earendil-works/pi-mono/blob/main/packages/pi/docs/models.md';
+  const url = 'https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/models.md';
   fetch('/api/open', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
