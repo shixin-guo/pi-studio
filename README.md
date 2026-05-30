@@ -137,17 +137,6 @@ The embedded pi process loads `embedded-server.mjs` at startup. That extension o
 
 Your own `~/.pi/agent/extensions/` and project-local `.pi/extensions/` are still auto-loaded by the embedded pi — embedding doesn't disable user extensions.
 
-## Configuration
-
-Environment variables read at startup (rarely needed):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PI_STUDIO_PORT` | `3001` | First port pi tries; subsequent windows pick `3002`, `3003`, ... automatically |
-| `PI_STUDIO_PROJECTS_DIR` | *(set in launcher)* | Override the projects root directory |
-
-Project list, theme, and workspace bookmarks live in `~/.pi/agent/settings.json` under the `pistudio` key.
-
 ## Development
 
 ```bash
