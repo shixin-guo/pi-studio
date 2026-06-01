@@ -192,4 +192,7 @@ jobs:
       - name: Debug AppImage bundle output
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
+          # Workaround for linuxdeploy/strip failures on modern ELF
+          # binaries (e.g. `.relr.dyn`), see tauri#14796.
+          NO_STRIP: "true"
         run: bun tauri build --bundles appimage -v
