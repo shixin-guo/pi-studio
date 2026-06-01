@@ -2222,6 +2222,8 @@ const APP_VERSION = (() => {
 let pendingUpdate = null;
 let updaterBusy = false;
 const BETA_VERSION_RE = /-beta(?:[.-]|$)/i;
+const NUMERIC_PRERELEASE_VERSION_RE = /-\d+(?:\.\d+)*$/;
+let currentAppVersion = APP_VERSION;
 
 function setUpdateStatus(message, tone = 'info') {
   if (!updateStatusRow || !updateStatusEl) return;
@@ -2253,12 +2255,17 @@ function isIgnoredPrereleaseVersion(version) {
   return BETA_VERSION_RE.test(String(version || '').trim());
 }
 
+function isLocalPrereleaseBuild(version) {
+  return NUMERIC_PRERELEASE_VERSION_RE.test(String(version || '').trim());
+}
+
 async function loadAppVersion() {
   if (!appVersionValue) return;
 
   if (APP_VERSION) {
     appVersionValue.textContent = APP_VERSION;
-    return;
+    currentAppVersion = APP_VERSION;
+    return APP_VERSION;
   }
 
   try {
@@ -2266,19 +2273,23 @@ async function loadAppVersion() {
       const v = await window.tauriNative.getAppVersion();
       if (v) {
         appVersionValue.textContent = v;
-        return;
+        currentAppVersion = v;
+        return v;
       }
     }
     const tauriApp = window.__TAURI__?.app;
     if (tauriApp?.getVersion) {
       const v = await tauriApp.getVersion();
       appVersionValue.textContent = v || 'unknown';
-      return;
+      currentAppVersion = v || 'unknown';
+      return currentAppVersion;
     }
   } catch (err) {
     console.warn('[updater] unable to read app version:', err);
   }
   appVersionValue.textContent = 'unknown';
+  currentAppVersion = 'unknown';
+  return currentAppVersion;
 }
 
 // Pattern-match the most common Tauri updater errors so we can show a
@@ -2306,6 +2317,18 @@ function explainUpdateError(rawMessage) {
 
 async function checkForUpdates({ silent = false } = {}) {
   if (updaterBusy) return null;
+
+  if (isLocalPrereleaseBuild(currentAppVersion)) {
+    if (!silent) {
+      setUpdateStatus(
+        `Pre-release build (${currentAppVersion}) — auto-update is disabled for this build.`,
+        'info',
+      );
+    }
+    pendingUpdate = null;
+    showInstallButton(null);
+    return null;
+  }
 
   if (!window.tauriNative?.hasUpdater) {
     if (!silent) setUpdateStatus('Auto-updates are only available in the desktop app.', 'warn');
@@ -2424,11 +2447,19 @@ async function initUpdaterUI() {
     return;
   }
 
-  loadAppVersion();
+  const appVersion = await loadAppVersion();
 
   if (await isDevBuild()) {
     setUpdateStatus('Dev build — updates are checked only in packaged releases.', 'info');
     if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
+    return;
+  }
+
+  if (isLocalPrereleaseBuild(appVersion)) {
+    setUpdateStatus(`Pre-release build (${appVersion}) — auto-update is disabled for this build.`, 'info');
+    if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
+    if (installUpdateBtn) installUpdateBtn.disabled = true;
+    showInstallButton(null);
     return;
   }
 
