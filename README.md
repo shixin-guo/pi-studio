@@ -36,6 +36,8 @@ You **do not** need to install the `pi` CLI separately — Pi Studio bundles its
 
 ### macOS unsigned release notice
 
+
+
 Pi Studio currently ships macOS builds without Apple Developer ID signing/notarization. Expected Gatekeeper behavior is a block such as:
 
 `"Pi Studio" cannot be opened because the developer cannot be verified.`
@@ -46,6 +48,13 @@ Use the standard GUI allow path:
 2. Right-click the app and choose **Open**
 3. If blocked, open **System Settings → Privacy & Security**
 4. Click **Open Anyway** for Pi Studio
+
+
+<img width="299" height="282" alt="image" src="https://github.com/user-attachments/assets/cb09f1f8-9eb8-4c0d-aee0-2fc9b704b201" />
+
+Click **Done**
+then： 
+<img width="724" height="346" alt="image" src="https://github.com/user-attachments/assets/42ada9ae-b43d-47f1-bf38-ea38c34beb4f" />
 
 For maintainers: publish the generated `.dmg` artifact directly and avoid modifying `.app` contents after bundling. The release helper script `bun run release:mac:dmg` validates this (rejects ad-hoc and broken signatures).
 
