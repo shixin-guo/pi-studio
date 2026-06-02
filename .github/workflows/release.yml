@@ -81,11 +81,15 @@ jobs:
       - name: Build pi extensions bundle
         run: bun run build:extensions
 
-      - name: Build Tauri app (Linux deb only) and publish assets
+      - name: Build Tauri app (Linux deb + AppImage) and publish assets
         if: runner.os == 'Linux'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          # Workaround for linuxdeploy/strip failures on modern ELF
+          # binaries (e.g. `.relr.dyn`), see tauri#14796.
+          NO_STRIP: "true"
           # Signing key for the Tauri updater. Required so the bundler
           # produces `*.sig` files and `latest.json` (the manifest the
           # auto-updater reads from the GitHub release). Configure these
@@ -101,7 +105,7 @@ jobs:
             Download the installer for your platform from the assets below.
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          args: --bundles deb
+          args: --bundles deb,appimage
           # tauri-action will only attach `latest.json` (the updater
           # manifest) when this is `true`. Combined with
           # `bundle.createUpdaterArtifacts` in tauri.conf.json, the
