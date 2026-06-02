@@ -16,7 +16,10 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
+            pi_target_platform: linux-x64
+          - os: ubuntu-24.04-arm
+            pi_target_platform: linux-arm64
           - os: windows-2022
 
     runs-on: ${{ matrix.os }}
@@ -46,6 +49,9 @@ jobs:
             "$WEBKIT_DEV_PKG" \
             libappindicator3-dev \
             librsvg2-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
             libfuse2 \
             squashfs-tools \
             zsync \
@@ -64,6 +70,8 @@ jobs:
           key: pi-binaries-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/pi-version.json') }}
 
       - name: Fetch embedded pi binary
+        env:
+          PI_TARGET_PLATFORM: ${{ matrix.pi_target_platform }}
         run: bun run fetch:pi
 
       # Sanity-check that the host-platform binary actually runs. We only
@@ -147,7 +155,7 @@ jobs:
   appimage-debug:
     # Keep release job unblocked; this job is for readable diagnostics only.
     continue-on-error: true
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -173,6 +181,9 @@ jobs:
             "$WEBKIT_DEV_PKG" \
             libappindicator3-dev \
             librsvg2-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
             libfuse2 \
             squashfs-tools \
             zsync \
