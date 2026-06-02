@@ -427,19 +427,17 @@ function handleRPCEvent(event) {
       break;
     case 'message_start':
       handleMessageStart(event.message);
+      if (pendingNewSessionRefresh && event.message.role === 'assistant') {
+        pendingNewSessionRefresh = false;
+        sidebar.loadSessions({ quiet: true }).catch(() => {});
+        pollInstances().catch(() => {});
+      }
       break;
     case 'message_update':
       handleMessageUpdate(event);
       break;
     case 'message_end':
       handleMessageEnd(event.message);
-      if (pendingNewSessionRefresh) {
-        pendingNewSessionRefresh = false;
-        sidebar.loadSessions().catch(() => {});
-        // Retry after a short delay in case pi hasn't flushed the session file yet
-        setTimeout(() => sidebar.loadSessions({ quiet: true }).catch(() => {}), 1000);
-        pollInstances().catch(() => {});
-      }
       break;
     case 'tool_execution_start':
       handleToolExecutionStart(event);
