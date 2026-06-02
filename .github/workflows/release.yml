@@ -91,7 +91,7 @@ jobs:
       - name: Build pi extensions bundle
         run: bun run build:extensions
 
-      - name: Build Tauri app (Linux deb + AppImage) and publish assets
+      - name: Build Tauri app (Linux deb) and publish assets
         if: runner.os == 'Linux'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -115,7 +115,7 @@ jobs:
             Download the installer for your platform from the assets below.
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          args: --bundles deb,appimage
+          args: --bundles deb
           # tauri-action will only attach `latest.json` (the updater
           # manifest) when this is `true`. Combined with
           # `bundle.createUpdaterArtifacts` in tauri.conf.json, the
