@@ -16,7 +16,9 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-          - os: ubuntu-24.04
+          # AppImage/linuxdeploy is currently more stable on 22.04 than 24.04
+          # for GTK/WebKit bundles in CI.
+          - os: ubuntu-22.04
             pi_target_platform: linux-x64
           - os: ubuntu-24.04-arm
             pi_target_platform: linux-arm64
