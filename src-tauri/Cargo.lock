@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "pi-studio"
-version = "0.1.25-8"
+version = "0.1.25-9"
 dependencies = [
  "dirs 5.0.1",
  "log",
