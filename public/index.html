@@ -233,13 +233,6 @@
               <span class="settings-label">Thinking level</span>
               <button class="settings-value-btn" id="btn-thinking-level">off</button>
             </div>
-            <div class="settings-row" id="setting-pi-version">
-              <span class="settings-label">Pi version</span>
-              <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
-            </div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">Display</div>
             <div class="settings-row">
               <span class="settings-label">Show thinking</span>
               <button class="settings-toggle on" id="toggle-show-thinking"></button>
@@ -247,6 +240,10 @@
           </div>
           <div class="settings-section" id="setting-updater-section">
             <div class="settings-section-title">Updates</div>
+            <div class="settings-row" id="setting-pi-version">
+              <span class="settings-label">Pi version</span>
+              <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
+            </div>
             <div class="settings-row">
               <span class="settings-label">Pi Studio version</span>
               <span class="settings-static-value" id="setting-app-version-value">Loading...</span>
@@ -295,9 +292,15 @@
                 <input type="checkbox" id="pkg-browse-installed-only" />
                 <span>Installed only</span>
               </label>
+              <select id="pkg-browse-sort" class="pkg-browse-sort" aria-label="Sort packages">
+                <option value="downloads">Most downloads</option>
+                <option value="name">Name (A–Z)</option>
+                <option value="updated">Recently updated</option>
+              </select>
               <span class="pkg-browse-count" id="pkg-browse-count"></span>
             </div>
             <div class="settings-extension-list pkg-browse-list" id="pkg-browse-list"></div>
+            <div class="pkg-browse-pagination" id="pkg-browse-pagination" hidden></div>
           </div>
         </div>
       </div>

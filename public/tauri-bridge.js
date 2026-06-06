@@ -22,6 +22,19 @@
     return parseInt(location.port, 10) || 47821;
   }
 
+  function currentBrokerWsUrl() {
+    try {
+      const fromUrl = new URLSearchParams(location.search).get("brokerWs");
+      if (fromUrl) {
+        sessionStorage.setItem("pi-studio:broker-ws-url", fromUrl);
+        return fromUrl;
+      }
+      return sessionStorage.getItem("pi-studio:broker-ws-url") || "";
+    } catch {
+      return "";
+    }
+  }
+
   // ── Updater (tauri-plugin-updater + tauri-plugin-process) ────────────────
   // We talk to the plugins directly via `invoke('plugin:<name>|<cmd>')`
   // instead of bundling `@tauri-apps/plugin-updater` / `-process`, because
@@ -130,6 +143,7 @@
         sessionPath: options.sessionPath ?? null,
         forceNewSession: options.forceNewSession ?? false,
         openWindow: options.openWindow ?? true,
+        waitForHealth: options.waitForHealth ?? true,
         waitForSessions: options.waitForSessions ?? false,
       }),
 
@@ -172,6 +186,8 @@
     hasUpdater,
 
     currentPort,
+
+    brokerWsUrl: currentBrokerWsUrl,
   };
 
   console.log("[tauri-bridge] Native APIs ready on port", currentPort());

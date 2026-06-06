@@ -1,8 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod broker_ws;
 mod pi_manager;
 
-use pi_manager::{locked_pi_version, wait_for_endpoint, wait_for_health, PiManager};
+use broker_ws::BrokerWs;
+use pi_manager::{
+    locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
+};
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -15,13 +19,22 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_dialog::MessageDialogKind;
 
 type PiManagerState = Arc<PiManager>;
+type BrokerWsState = Arc<BrokerWs>;
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
 
 /// Create a new session within the current workspace (RPC command to existing pi)
 #[tauri::command]
-fn cmd_new_session(port: u16, manager: State<PiManagerState>) -> Result<(), String> {
-    manager.send_rpc(port, serde_json::json!({ "type": "new_session" }))
+fn cmd_new_session(
+    port: u16,
+    manager: State<PiManagerState>,
+    broker: State<BrokerWsState>,
+) -> Result<(), String> {
+    let result = manager.send_rpc(port, serde_json::json!({ "type": "new_session" }));
+    if result.is_ok() {
+        broker.set_active_port(port);
+    }
+    result
 }
 
 /// Resume (switch to) an existing session file within the current workspace
@@ -30,11 +43,16 @@ fn cmd_switch_session(
     port: u16,
     session_path: String,
     manager: State<PiManagerState>,
+    broker: State<BrokerWsState>,
 ) -> Result<(), String> {
-    manager.send_rpc(
+    let result = manager.send_rpc(
         port,
-        serde_json::json!({ "type": "switch_session", "sessionPath": session_path }),
-    )
+        serde_json::json!({ "type": "switch_session", "sessionPath": session_path.clone() }),
+    );
+    if result.is_ok() {
+        broker.register_session(port, &session_path);
+    }
+    result
 }
 
 /// Open a workspace directory by spawning a separate pi process.
@@ -42,13 +60,16 @@ fn cmd_switch_session(
 /// When false, the pi process is spawned headlessly and the caller is expected to
 /// navigate the current window to the returned port.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn cmd_open_workspace(
     cwd: String,
     session_path: Option<String>,
     force_new_session: Option<bool>,
     open_window: Option<bool>,
+    wait_for_health: Option<bool>,
     wait_for_sessions: Option<bool>,
     manager: State<'_, PiManagerState>,
+    broker: State<'_, BrokerWsState>,
     app: AppHandle,
 ) -> Result<u16, String> {
     let started_at = Instant::now();
@@ -62,34 +83,42 @@ async fn cmd_open_workspace(
         spawn_started_at.elapsed().as_millis()
     );
 
-    // Brief pause then check if the process crashed immediately (fast-fail
-    // instead of waiting the full 30-second health timeout).
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    if let Some(status) = manager.check_exited(port) {
-        return Err(format!(
-            "Pi process exited immediately (port {}, status: {}). \
-             Check stderr for crash details.",
-            port, status
-        ));
-    }
-
-    let health_started_at = Instant::now();
-    match wait_for_health(port, 30).await {
-        Ok(_) => {}
-        Err(e) => {
-            let extra = if let Some(status) = manager.check_exited(port) {
-                format!(" Process has exited with status: {}.", status)
-            } else {
-                String::new()
-            };
-            return Err(format!("{}{}", e, extra));
+    if wait_for_health.unwrap_or(true) {
+        // Brief pause then check if the process crashed immediately (fast-fail
+        // instead of waiting the full 30-second health timeout).
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Some(status) = manager.check_exited(port) {
+            return Err(format!(
+                "Pi process exited immediately (port {}, status: {}). \
+                 Check stderr for crash details.",
+                port, status
+            ));
         }
+
+        let health_started_at = Instant::now();
+        match wait_for_pi_health(port, 30).await {
+            Ok(_) => {}
+            Err(e) => {
+                let extra = if let Some(status) = manager.check_exited(port) {
+                    format!(" Process has exited with status: {}.", status)
+                } else {
+                    String::new()
+                };
+                return Err(format!("{}{}", e, extra));
+            }
+        }
+        log::info!(
+            "[pi-desktop] open_workspace health ready: port={} elapsed_ms={}",
+            port,
+            health_started_at.elapsed().as_millis()
+        );
     }
-    log::info!(
-        "[pi-desktop] open_workspace health ready: port={} elapsed_ms={}",
-        port,
-        health_started_at.elapsed().as_millis()
-    );
+    // Register with the broker only after the process is confirmed reachable
+    // (or, when health checks are skipped, right before we start driving it).
+    // Registering earlier would start the upstream reconnect loop against a
+    // port that may never come up, leaking a 750ms-interval reconnect spinner
+    // on any spawn failure path that returns without unregistering.
+    broker.register_session(port, session_path.as_deref().unwrap_or(""));
     if force_new_session.unwrap_or(false) {
         let new_session_started_at = Instant::now();
         manager.send_rpc(port, serde_json::json!({ "type": "new_session" }))?;
@@ -115,7 +144,7 @@ async fn cmd_open_workspace(
         }
     }
     if open_window.unwrap_or(true) {
-        open_workspace_window(&app, port)?;
+        open_workspace_window(&app, port, &broker.url())?;
     }
     log::info!(
         "[pi-desktop] open_workspace complete: port={} total_elapsed_ms={}",
@@ -127,8 +156,9 @@ async fn cmd_open_workspace(
 
 /// Stop (kill) a pi instance
 #[tauri::command]
-fn cmd_stop_instance(port: u16, manager: State<PiManagerState>) {
+fn cmd_stop_instance(port: u16, manager: State<PiManagerState>, broker: State<BrokerWsState>) {
     manager.kill(port);
+    broker.unregister_port(port);
 }
 
 /// Spawn (or reuse) a dedicated pi process for a specific session file so it
@@ -140,9 +170,16 @@ async fn cmd_spawn_session_process(
     session_file: String,
     cwd: String,
     manager: State<'_, PiManagerState>,
+    broker: State<'_, BrokerWsState>,
 ) -> Result<u16, String> {
-    let port = manager.spawn_session_dedicated(workspace_port, session_file, cwd.as_str())?;
-    wait_for_health(port, 15).await?;
+    let port =
+        manager.spawn_session_dedicated(workspace_port, session_file.clone(), cwd.as_str())?;
+    wait_for_pi_health(port, 15).await?;
+    // Use track_background_session instead of register_session so the dedicated
+    // process is routable by session ID but does NOT become the default
+    // active_port — that would silently misroute commands from the session the
+    // user is currently viewing.
+    broker.track_background_session(port, &session_file);
     Ok(port)
 }
 
@@ -213,9 +250,19 @@ fn cmd_remove_pi_package(source: String, manager: State<PiManagerState>) -> Resu
 
 // ─── Window helpers ───────────────────────────────────────────────────────────
 
-fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
+fn encode_query_value(value: &str) -> String {
+    // Encode everything that isn't an unreserved URL character so the value is
+    // safe in a query string regardless of its contents.
+    percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+fn open_workspace_window(app: &AppHandle, port: u16, broker_ws_url: &str) -> Result<(), String> {
     let label = format!("workspace-{}", port);
-    let url = format!("http://localhost:{}", port);
+    let url = format!(
+        "http://localhost:{}?brokerWs={}",
+        port,
+        encode_query_value(broker_ws_url)
+    );
     let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
         .map_err(|e| format!("Failed to load window icon: {}", e))?;
 
@@ -390,7 +437,10 @@ fn find_latest_session_boot_target() -> Option<(String, String)> {
 }
 
 #[tauri::command]
-async fn cmd_retry_startup(manager: State<'_, PiManagerState>) -> Result<u16, String> {
+async fn cmd_retry_startup(
+    manager: State<'_, PiManagerState>,
+    broker: State<'_, BrokerWsState>,
+) -> Result<u16, String> {
     let home_cwd = dirs::home_dir()
         .unwrap_or_default()
         .to_string_lossy()
@@ -403,7 +453,13 @@ async fn cmd_retry_startup(manager: State<'_, PiManagerState>) -> Result<u16, St
     // claim a fresh one so the resulting pi is driveable via our PiManager.
     let initial_port = manager.next_port();
     manager.spawn(&cwd, initial_port, session_path.as_deref())?;
-    wait_for_health(initial_port, 30).await?;
+    broker.register_session(initial_port, session_path.as_deref().unwrap_or(""));
+    if let Err(e) = wait_for_pi_health(initial_port, 30).await {
+        // Tear down the upstream reconnect loop started by register_session so it
+        // doesn't spin forever against a dead port every 750ms.
+        broker.unregister_port(initial_port);
+        return Err(e);
+    }
     Ok(initial_port)
 }
 
@@ -416,10 +472,19 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .level_for("tokio_tungstenite", log::LevelFilter::Warn)
+                .level_for("tungstenite", log::LevelFilter::Warn)
+                .level_for("tokio_util", log::LevelFilter::Warn)
+                .level_for("hyper", log::LevelFilter::Warn)
+                .build(),
+        )
         .setup(|app| {
             let static_dir = find_static_dir(app);
             let manager = Arc::new(PiManager::new(static_dir));
+            let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
 
             let home_cwd = dirs::home_dir()
                 .unwrap_or_default()
@@ -493,14 +558,26 @@ fn main() {
             }
 
             app.manage(manager.clone());
+            app.manage(broker.clone());
 
             if startup_ok {
+                broker.register_session(initial_port, session_path.as_deref().unwrap_or(""));
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = wait_for_health(initial_port, 30).await {
+                    if let Err(e) = wait_for_pi_health(initial_port, 30).await {
                         log::error!("Pi failed to start: {}", e);
-                    } else if let Err(e) = open_workspace_window(&app_handle, initial_port) {
-                        log::error!("Failed to open window: {}", e);
+                        // Tear down the upstream reconnect loop started by
+                        // register_session so it doesn't spin forever against a
+                        // dead port every 750ms.
+                        if let Some(broker) = app_handle.try_state::<BrokerWsState>() {
+                            broker.unregister_port(initial_port);
+                        }
+                    } else if let Some(broker) = app_handle.try_state::<BrokerWsState>() {
+                        if let Err(e) = open_workspace_window(&app_handle, initial_port, &broker.url()) {
+                            log::error!("Failed to open window: {}", e);
+                        }
+                    } else {
+                        log::error!("Failed to open window: broker websocket state missing");
                     }
                 });
             }
@@ -515,6 +592,9 @@ fn main() {
                         if let Some(manager) = window.try_state::<PiManagerState>() {
                             manager.kill_workspace_dedicated(port);
                             manager.kill(port);
+                        }
+                        if let Some(broker) = window.try_state::<BrokerWsState>() {
+                            broker.unregister_port(port);
                         }
                     }
                 }

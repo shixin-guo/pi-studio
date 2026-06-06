@@ -29,6 +29,36 @@
 // across the navigation boundary via sessionStorage; the new page boots
 // straight into it (see index.html bootstrap script).
 
+// Append the broker WS URL to a navigation target so the freshly-loaded
+// page (on a *different* origin/port) can reach the shared broker. Without
+// this the new page can't recover the broker URL: it isn't in the URL, and
+// sessionStorage is per-origin so it isn't shared across the port change.
+// The new page then silently falls back to its own per-instance /ws,
+// bypassing the broker multiplexer. Mirrors the Rust windowed path
+// (open_workspace_window) which already appends ?brokerWs=.
+export function withBrokerWs(url, tauriNative) {
+  let brokerUrl = "";
+  try {
+    brokerUrl = tauriNative?.brokerWsUrl?.() || "";
+  } catch {
+    brokerUrl = "";
+  }
+  if (!brokerUrl) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}brokerWs=${encodeURIComponent(brokerUrl)}`;
+}
+
+// True when an in-place `new_session(port)` / `switch_session(port)` RPC
+// failed because the target port is no longer backed by a pi process the
+// Rust PiManager owns. This happens when `foregroundPort` drifts to a stale
+// port — e.g. a dedicated/background session process that has since exited,
+// or a leftover port from a previous run. The caller should recover by
+// spawning a fresh process rather than surfacing the raw error.
+export function isDeadPortError(error) {
+  const message = typeof error === "string" ? error : error?.message || String(error || "");
+  return /No pi instance on port/i.test(message);
+}
+
 function runOnBeforeSwap(onBeforeSwap, label) {
   if (typeof onBeforeSwap !== "function") return () => {};
   try {
@@ -76,7 +106,7 @@ async function attachToWorkspace({
     }
   }
 
-  navigate(`http://localhost:${targetPort}/`);
+  navigate(withBrokerWs(`http://localhost:${targetPort}/`, tauriNative));
   return { samePort: false, port: targetPort };
 }
 
@@ -94,6 +124,7 @@ export async function startInWindowNewSession({
   onBeforeSwap,
   shouldSpawnParallel,
   onInPlaceSessionCreated,
+  onParallelSessionCreated,
   renderError,
 }) {
   if (!tauriNative) {
@@ -133,6 +164,12 @@ export async function startInWindowNewSession({
   const currentPort = typeof getCurrentPort === "function" ? getCurrentPort() : null;
   const wantsParallel =
     typeof shouldSpawnParallel === "function" ? Boolean(shouldSpawnParallel()) : false;
+  console.debug("[Session route] newSession:decision", {
+    targetCwd,
+    currentPort,
+    wantsParallel,
+    mode: wantsParallel ? "parallel-spawn" : "in-place",
+  });
   if (!wantsParallel && typeof currentPort === "number" && Number.isFinite(currentPort)) {
     try {
       await tauriNative.newSession(currentPort);
@@ -141,23 +178,79 @@ export async function startInWindowNewSession({
       }
       return true;
     } catch (e) {
-      renderError(`Failed to start new session: ${e}`);
-      return false;
+      // If the in-place target port has drifted to a dead/unmanaged process,
+      // don't fail — recover by spawning a fresh process for this workspace.
+      if (!isDeadPortError(e)) {
+        renderError(`Failed to start new session: ${e}`);
+        return false;
+      }
+      console.warn("[Session route] newSession:in-place-dead-port, spawning fresh process", {
+        currentPort,
+        error: String(e),
+      });
     }
   }
 
-  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, "Starting session…");
+  return spawnFreshSession({
+    targetCwd,
+    tauriNative,
+    navigate,
+    onBeforeSwap,
+    onParallelSessionCreated,
+    renderError,
+    label: "Starting session…",
+    debugTag: "newSession",
+  });
+}
+
+// Spawn a brand-new headless pi for `targetCwd` and either activate it
+// in-place (when `onParallelSessionCreated` is provided) or navigate the
+// current window to it. Shared by "+ New Session" (parallel + dead-port
+// fallback) and the project-tile "start new chat" flow.
+async function spawnFreshSession({
+  targetCwd,
+  tauriNative,
+  navigate,
+  onBeforeSwap,
+  onParallelSessionCreated,
+  renderError,
+  label,
+  debugTag,
+  errorLabel = "Failed to start new session",
+}) {
+  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, label);
   try {
+    // For in-place parallel activation (no full-page navigation) we MUST wait
+    // for the freshly-spawned pi to be healthy before switching the UI/broker
+    // routing to its port — otherwise the broker connects to a not-yet-listening
+    // port (Connection refused) and the UI is stuck attached to a dead instance.
+    const waitForHealth = typeof onParallelSessionCreated === "function";
     const newPort = await tauriNative.openWorkspace(targetCwd, {
       forceNewSession: false,
       openWindow: false,
+      waitForHealth,
       waitForSessions: false,
     });
-    navigate(`http://localhost:${newPort}/`);
+    console.debug(`[Session route] ${debugTag}:parallel-created`, {
+      targetCwd,
+      newPort,
+    });
+    if (typeof onParallelSessionCreated === "function") {
+      // In-place activation: no full-page navigation happens, so the swap
+      // overlay would otherwise stay up forever. Dismiss it ourselves once
+      // the new parallel session is wired up.
+      try {
+        await onParallelSessionCreated(newPort, targetCwd);
+      } finally {
+        dismissOverlay();
+      }
+      return true;
+    }
+    navigate(withBrokerWs(`http://localhost:${newPort}/`, tauriNative));
     return true;
   } catch (e) {
     dismissOverlay();
-    renderError(`Failed to start new session: ${e}`);
+    renderError(`${errorLabel}: ${e}`);
     return false;
   }
 }
@@ -180,6 +273,7 @@ export async function startNewProjectChat({
   getCurrentCwd,
   shouldSpawnParallel,
   onInPlaceSessionCreated,
+  onParallelSessionCreated,
   fetchInstances,
   navigate,
   onBeforeSwap,
@@ -206,6 +300,13 @@ export async function startNewProjectChat({
   const sameWorkspace = Boolean(currentCwd && targetCwd && currentCwd === targetCwd);
   const wantsParallel =
     typeof shouldSpawnParallel === "function" ? Boolean(shouldSpawnParallel()) : false;
+  console.debug("[Session route] projectNewChat:decision", {
+    targetCwd,
+    currentCwd,
+    currentPort,
+    sameWorkspace,
+    wantsParallel,
+  });
 
   if (
     sameWorkspace &&
@@ -220,8 +321,27 @@ export async function startNewProjectChat({
       }
       return true;
     } catch (e) {
-      renderError(`Failed to start new chat: ${e}`);
-      return false;
+      // Drifted/dead foreground port: fall through to spawning a fresh
+      // process for this workspace instead of surfacing the raw RPC error.
+      if (!isDeadPortError(e)) {
+        renderError(`Failed to start new chat: ${e}`);
+        return false;
+      }
+      console.warn("[Session route] projectNewChat:in-place-dead-port, spawning fresh process", {
+        currentPort,
+        error: String(e),
+      });
+      return spawnFreshSession({
+        targetCwd,
+        tauriNative,
+        navigate,
+        onBeforeSwap,
+        onParallelSessionCreated,
+        renderError,
+        label: "Starting new chat…",
+        debugTag: "projectNewChat",
+        errorLabel: "Failed to start new chat",
+      });
     }
   }
 
@@ -238,20 +358,17 @@ export async function startNewProjectChat({
     return result !== null;
   }
 
-  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, "Starting new chat…");
-  try {
-    const newPort = await tauriNative.openWorkspace(targetCwd, {
-      forceNewSession: false,
-      openWindow: false,
-      waitForSessions: false,
-    });
-    navigate(`http://localhost:${newPort}/`);
-    return true;
-  } catch (e) {
-    dismissOverlay();
-    renderError(`Failed to start new chat: ${e}`);
-    return false;
-  }
+  return spawnFreshSession({
+    targetCwd,
+    tauriNative,
+    navigate,
+    onBeforeSwap,
+    onParallelSessionCreated,
+    renderError,
+    label: "Starting new chat…",
+    debugTag: "projectNewChat",
+    errorLabel: "Failed to start new chat",
+  });
 }
 
 // Launcher bubble / "Open Folder" entry point. Does NOT spawn a parallel

@@ -2,6 +2,17 @@
  * WebSocket Client - Handles connection to backend WebSocket server
  */
 
+export function resolveWebSocketUrl(env = globalThis.window || globalThis) {
+  const tauriBrokerUrl = env?.tauriNative?.brokerWsUrl?.();
+  if (typeof tauriBrokerUrl === "string" && tauriBrokerUrl.trim()) {
+    return tauriBrokerUrl.trim();
+  }
+
+  const loc = env?.location || globalThis.location;
+  const protocol = loc?.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${loc?.host || "127.0.0.1:47821"}/ws`;
+}
+
 export class WebSocketClient extends EventTarget {
   constructor(url) {
     super();
@@ -17,13 +28,24 @@ export class WebSocketClient extends EventTarget {
     this.protocolVersion = 1;
     this.workspaceId = null;
     this.sessionId = null;
+    this.sourcePort = null;
     this.requestCounter = 0;
   }
 
-  setRoutingContext({ workspaceId, sessionId }) {
+  setRoutingContext({ workspaceId, sessionId, sourcePort }) {
     if (typeof workspaceId === "string" && workspaceId.trim())
       this.workspaceId = workspaceId.trim();
+    if (sessionId === null) this.sessionId = null;
     if (typeof sessionId === "string" && sessionId.trim()) this.sessionId = sessionId.trim();
+    if (sourcePort === null) this.sourcePort = null;
+    if (typeof sourcePort === "number" && Number.isFinite(sourcePort)) {
+      this.sourcePort = sourcePort;
+    }
+    console.debug("[WS route] setRoutingContext", {
+      workspaceId: this.workspaceId,
+      sessionId: this.sessionId,
+      sourcePort: this.sourcePort,
+    });
   }
 
   connect() {
@@ -143,32 +165,60 @@ export class WebSocketClient extends EventTarget {
               requestId: `req-${++this.requestCounter}`,
               workspaceId: this.workspaceId || undefined,
               sessionId: this.sessionId || undefined,
+              sourcePort: this.sourcePort || undefined,
               payload: data,
             };
+      console.debug("[WS route] send", {
+        command: payload.payload?.type || payload.type,
+        requestId: payload.requestId,
+        workspaceId: payload.workspaceId,
+        sessionId: payload.sessionId,
+        sourcePort: payload.sourcePort,
+      });
       this.ws.send(JSON.stringify(payload));
     } else {
       console.error("[WS] Cannot send, not connected");
     }
   }
 
-  handleMessage(message) {
+  handleMessage(message, route = null) {
     if (message.type === "broker_event") {
       const payload = message.payload || {};
+      // Extract routing metadata from the broker envelope but do NOT call
+      // setRoutingContext here — incoming events must not silently hijack the
+      // routing context that the user (or an explicit session-select action)
+      // set. If session B streams an event while the user is viewing session A,
+      // the next command must still go to A.
+      const eventRoute = {
+        workspaceId: message.workspaceId || payload.workspaceId || undefined,
+        sessionId: message.sessionId || payload.sessionId || undefined,
+        sourcePort: message.sourcePort || payload.port || undefined,
+      };
+      console.debug("[WS route] broker_event", {
+        payloadType: payload.type,
+        eventType: payload.event?.type,
+        workspaceId: eventRoute.workspaceId,
+        sessionId: eventRoute.sessionId,
+        sourcePort: eventRoute.sourcePort,
+      });
       this.dispatchEvent(new CustomEvent("brokerEvent", { detail: message }));
-      if (message.workspaceId || message.sessionId) {
-        this.setRoutingContext({
-          workspaceId: message.workspaceId || undefined,
-          sessionId: message.sessionId || undefined,
-        });
-      }
-      this.handleMessage(payload);
+      this.handleMessage(payload, eventRoute);
       return;
     }
 
     // Emit events based on message type
     switch (message.type) {
       case "event":
-        this.dispatchEvent(new CustomEvent("rpcEvent", { detail: message.event }));
+        this.dispatchEvent(
+          new CustomEvent("rpcEvent", {
+            detail: message.event
+              ? {
+                  ...message.event,
+                  __broker: route,
+                }
+              : message.event,
+          }),
+        );
         break;
       case "state":
         this.dispatchEvent(new CustomEvent("stateUpdate", { detail: message }));
@@ -185,11 +235,16 @@ export class WebSocketClient extends EventTarget {
         this.dispatchEvent(new CustomEvent("sessionSwitch"));
         break;
       case "mirror_sync":
-        if (message.workspaceId || message.sessionId) {
-          this.setRoutingContext({
-            workspaceId: message.workspaceId || undefined,
-            sessionId: message.sessionId || undefined,
-          });
+        // Do NOT call setRoutingContext here. The broker broadcasts every
+        // upstream's `mirror_sync` to all UI clients, so a snapshot emitted by
+        // a *background* pi process (e.g. the previously-running session that
+        // keeps streaming after the user switched away) must not silently
+        // hijack the routing context — otherwise the user's next command would
+        // be routed to that background session. Routing context is owned by the
+        // app layer (`handleMirrorSync`), which guards against background
+        // snapshots by source port. Surface the source port so it can decide.
+        if (message.port == null && route?.sourcePort != null) {
+          message = { ...message, port: route.sourcePort };
         }
         this.dispatchEvent(new CustomEvent("mirrorSync", { detail: message }));
         break;

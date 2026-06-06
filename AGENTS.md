@@ -82,6 +82,36 @@ bun run build            # full release build (runs prebuild: fetch:pi + build:e
 
 Single test file: `bun run vitest run public/settings-save-status.test.js`
 
+## Linting & Formatting
+
+This project uses [Biome](https://biomejs.dev/) for JS/TS linting and formatting.
+
+After every frontend or extension edit, run the check before declaring the work done:
+
+```bash
+bun run check         # lint + format check (read-only, shows violations)
+bun run check:fix     # auto-fix all safe issues
+bun run lint          # lint only
+bun run format        # format check only
+bun run format:fix    # auto-fix formatting
+```
+
+### Rules
+
+- **Always** run `bun run check` after editing any `.js` / `.ts` file under `public/` or `extensions/`.
+- Only mark the task complete if `bun run check` exits 0 (or all remaining violations are intentional and documented).
+- Prefer `bun run check:fix` over manual reformatting — Biome is the source of truth for style.
+
+## Module Design
+
+The frontend (`public/`) is vanilla JS with **no framework**. Keep it modular:
+
+- **One concern per file.** Each module owns a single responsibility (e.g. WebSocket client, session sidebar, file browser, theme switching). Do not add unrelated logic to an existing file just because it is convenient.
+- **Avoid growing `app.js`.** `app.js` is the entry point / orchestrator. New feature logic belongs in a dedicated module that `app.js` imports, not inline in `app.js` itself.
+- **New file threshold.** If a feature adds more than ~50 lines of logic, extract it into its own module (e.g. `public/my-feature.js`) and import it from the appropriate entry point.
+- **No shared-state side-effects at import time.** Modules should export functions/classes; side-effects that mutate global state should be triggered explicitly by the caller, not at module load.
+- **Naming.** Use kebab-case filenames that match the single responsibility (`session-sidebar.js`, `file-browser.js`, `workspace-actions.js`).
+
 ## Architecture
 
 Pi Studio is a Tauri v2 app. The three main layers:

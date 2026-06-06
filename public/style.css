@@ -896,6 +896,8 @@ body {
    ═══════════════════════════════════════════════════════ */
 
 .main {
+  --messages-top-inset: 68px;
+  --messages-bottom-inset: 100px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -1773,6 +1775,28 @@ body {
   accent-color: var(--accent);
 }
 
+.pkg-browse-sort {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  outline: none;
+}
+
+.pkg-browse-sort:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.pkg-browse-sort:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
 .pkg-browse-count {
   margin-left: auto;
   font-size: 11px;
@@ -1825,6 +1849,49 @@ body {
   }
 }
 
+.pkg-browse-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.pkg-browse-page-btn {
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated, transparent);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.pkg-browse-page-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.pkg-browse-page-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg, #fff);
+}
+
+.pkg-browse-page-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pkg-browse-page-ellipsis {
+  padding: 0 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .pkg-browse-links {
   display: flex;
   flex-wrap: wrap;
@@ -1855,6 +1922,52 @@ body {
 
 .pkg-browse-link svg {
   flex-shrink: 0;
+}
+
+/* Extension troubleshooting tips */
+.pkg-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pkg-tip {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.pkg-tip-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  margin-top: 1px;
+}
+
+.pkg-tip-body {
+  min-width: 0;
+}
+
+.pkg-tip-body strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.pkg-tip-body code {
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-glass-strong, var(--bg-glass));
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .settings-value-btn.loading {
@@ -2388,7 +2501,7 @@ body {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 68px 24px 100px;
+  padding: var(--messages-top-inset) 24px var(--messages-bottom-inset);
   display: flex;
   flex-direction: column;
   gap: 6px;

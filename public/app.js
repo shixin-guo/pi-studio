@@ -9,7 +9,9 @@ import { createAppUpdater } from "./app-updater.js";
 import { setupVoiceInput } from "./app-voice-input.js";
 import { DialogHandler } from "./dialogs.js";
 import { FileBrowser } from "./file-browser.js";
+import { setupMessagesInsets } from "./layout-insets.js";
 import { MessageRenderer } from "./message-renderer.js";
+import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
 import { SessionSidebar } from "./session-sidebar.js";
 import {
   clearSettingsSaveMessage,
@@ -20,7 +22,7 @@ import {
 import { StateManager } from "./state.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
-import { WebSocketClient } from "./websocket-client.js";
+import { resolveWebSocketUrl, WebSocketClient } from "./websocket-client.js";
 import {
   openFolderAsWorkspace,
   startInWindowNewSession,
@@ -122,7 +124,7 @@ function dismissBootSwapOverlayWhenReady() {
 }
 
 // Initialize components
-const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`;
+const wsUrl = resolveWebSocketUrl(window);
 const wsClient = new WebSocketClient(wsUrl);
 const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById("messages"));
@@ -157,6 +159,16 @@ const tokenUsageEl = document.getElementById("token-usage");
 const scrollBottomBtn = document.getElementById("scroll-bottom-btn");
 const scrollBottomBadge = document.getElementById("scroll-bottom-badge");
 const messagesContainer = document.getElementById("messages");
+const mainContainer = document.querySelector(".main");
+const headerEl = document.querySelector(".header");
+const inputAreaEl = document.querySelector(".input-area");
+
+setupMessagesInsets({
+  main: mainContainer,
+  messages: messagesContainer,
+  header: headerEl,
+  inputArea: inputAreaEl,
+});
 
 // State tracking
 let currentStreamingElement = null;
@@ -183,18 +195,34 @@ let pendingNewSessionRefresh = false;
 // switch_session RPC only after agent_end so the running call is not aborted.
 let pendingSessionSwitchPath = null;
 let sessionsLoaded = false;
+// Serializes handleSessionSelect: the function is a long async sequence that
+// mutates shared routing state (foregroundPort, mirrorActiveSessionFile,
+// viewingActiveSession, pendingSessionSwitchPath). Two overlapping invocations
+// (fast double-click on different sessions) would interleave their awaits and
+// corrupt that state, so a second call queues behind the first.
+let sessionSelectChain = Promise.resolve();
 let deferredMirrorSync = null;
 let lastRenderedWelcomeWorkspacePath = null;
-// Concurrent session support: background WebSocket connections to sessions
-// that are streaming while the user views a different session.
-// Maps port -> { ws: WebSocket, sessionFile: string }
-const backgroundConnections = new Map();
 // Maps port -> sessionFile for each pi process we're tracking
 const portSessionMap = new Map();
 // The port that wsClient is currently connected to (the "foreground" session)
 let foregroundPort = getCurrentPort();
+const getActivePort = () => foregroundPort;
+function logSessionRoute(label, details = {}) {
+  console.debug(`[Session route] ${label}`, {
+    foregroundPort,
+    activeSessionFile: sidebar?.activeSessionFile || null,
+    mirrorActiveSessionFile,
+    viewingActiveSession,
+    isStreaming: state?.isStreaming,
+    wsSessionId: wsClient?.sessionId || null,
+    wsSourcePort: wsClient?.sourcePort || null,
+    ...details,
+  });
+}
 wsClient.setRoutingContext({
   workspaceId: `workspace:${getCurrentWorkspacePath() || "unknown"}`,
+  sourcePort: foregroundPort,
 });
 
 const workspaceIndicatorEl = document.createElement("div");
@@ -219,13 +247,11 @@ function updateWorkspaceIndicator(path = "") {
 }
 
 function syncWorkspaceIndicatorFromInstances() {
-  const current = liveInstances.find((instance) => instance?.port === getCurrentPort());
-  updateWorkspaceIndicator(current?.cwd || "");
+  updateWorkspaceIndicator(getWorkspacePathForPort(liveInstances, foregroundPort));
 }
 
 function getCurrentWorkspacePath() {
-  const current = liveInstances.find((instance) => instance?.port === getCurrentPort());
-  return current?.cwd || "";
+  return getWorkspacePathForPort(liveInstances, foregroundPort);
 }
 
 function renderWorkspaceWelcome({ force = false } = {}) {
@@ -416,6 +442,33 @@ wsClient.addEventListener("mirrorSync", (e) => {
 // ═══════════════════════════════════════
 
 function handleRPCEvent(event) {
+  const eventSessionFile = event?.__broker?.sessionId || null;
+  const eventSourcePort = event?.__broker?.sourcePort ?? null;
+
+  // Port-based guard: the broker broadcasts every upstream's events to all UI
+  // clients, so an event from a *different* pi process (e.g. the previous
+  // session that is still streaming after the user started a new parallel
+  // session) must never render into the foreground UI. A brand-new session
+  // has no session file yet, so the sessionId guard below can't catch this —
+  // the source port is the only reliable discriminator at that moment.
+  if (
+    typeof eventSourcePort === "number" &&
+    typeof foregroundPort === "number" &&
+    eventSourcePort !== foregroundPort
+  ) {
+    if (eventSessionFile) handleBackgroundRPCEvent(eventSessionFile, event);
+    return;
+  }
+
+  if (
+    eventSessionFile &&
+    sidebar.activeSessionFile &&
+    eventSessionFile !== sidebar.activeSessionFile
+  ) {
+    handleBackgroundRPCEvent(eventSessionFile, event);
+    return;
+  }
+
   // While the user is previewing a different session, suppress all live
   // rendering so the history view isn't overwritten by streaming output.
   // agent_end still needs to fire so we can complete the deferred switch.
@@ -423,16 +476,20 @@ function handleRPCEvent(event) {
 
   switch (event.type) {
     case "agent_start":
-      handleAgentStart();
+      handleAgentStart(event);
       break;
     case "agent_end":
-      handleAgentEnd();
+      handleAgentEnd(event);
       break;
     case "message_start":
       handleMessageStart(event.message);
-      if (pendingNewSessionRefresh && event.message.role === "assistant") {
+      // Refresh the sidebar as soon as the new session is persisted. Pi writes
+      // the brand-new session's .jsonl on the first user message round-trip, so
+      // refreshing on the user message (not just the assistant turn) makes the
+      // session — with its first message as the title — show up immediately.
+      if (pendingNewSessionRefresh) {
         pendingNewSessionRefresh = false;
-        sidebar.loadSessions({ quiet: true }).catch(() => {});
+        refreshSidebarForNewSession(event);
         pollInstances().catch(() => {});
       }
       break;
@@ -473,6 +530,23 @@ function handleRPCEvent(event) {
   }
 }
 
+function handleBackgroundRPCEvent(sessionFile, event) {
+  switch (event.type) {
+    case "agent_start":
+      sidebar.setStreaming(sessionFile, true);
+      break;
+    case "agent_end":
+      sidebar.setStreaming(sessionFile, false);
+      sidebar.markUnread(sessionFile);
+      sidebar.loadSessions({ quiet: true }).catch(() => {});
+      pollInstances().catch(() => {});
+      break;
+    case "message_end":
+      sidebar.markUnread(sessionFile);
+      break;
+  }
+}
+
 function handleCompactionStart() {
   const el = document.createElement("div");
   el.className = "system-message compaction-message";
@@ -495,21 +569,49 @@ function handleCompactionEnd(event) {
   hideCompactButton();
 }
 
-function getCurrentLiveSessionFile() {
-  const port = getCurrentPort();
-  const inst = liveInstances.find((i) => i?.port === port);
+/**
+ * Refresh the sidebar after a brand-new session's first message round-trips.
+ *
+ * Pi only persists a new session's .jsonl on the first message round-trip, and
+ * `/api/sessions` can briefly return *successfully* without the new file yet
+ * (loadSessions' built-in retry only covers fetch failures, not "fetched but
+ * the row isn't there"). So we reload, and if the freshly created session still
+ * isn't in the list, retry a few times with a short backoff before giving up.
+ */
+async function refreshSidebarForNewSession(event = null, attempt = 0) {
+  await sidebar.loadSessions({ quiet: true }).catch(() => {});
+
+  const liveFile = getCurrentLiveSessionFile(event);
+  if (liveFile) {
+    const found = sidebar.projects.some((p) => p.sessions.some((s) => s.filePath === liveFile));
+    if (found) {
+      sidebar.setActive(liveFile);
+      return;
+    }
+  }
+
+  if (attempt < 4) {
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    return refreshSidebarForNewSession(event, attempt + 1);
+  }
+}
+
+function getCurrentLiveSessionFile(event = null) {
+  const routedSession = event?.__broker?.sessionId;
+  if (routedSession) return routedSession;
+  const inst = liveInstances.find((i) => i?.port === foregroundPort);
   return inst?.sessionFile || mirrorActiveSessionFile || null;
 }
 
-function handleAgentStart() {
+function handleAgentStart(event = null) {
   state.setStreaming(true);
   showTypingIndicator(true);
   updateUI();
-  const live = getCurrentLiveSessionFile();
+  const live = getCurrentLiveSessionFile(event);
   if (live) sidebar.setStreaming(live, true);
 }
 
-function handleAgentEnd() {
+function handleAgentEnd(event = null) {
   state.setStreaming(false);
   showTypingIndicator(false);
   currentStreamingElement = null;
@@ -523,13 +625,15 @@ function handleAgentEnd() {
     pendingSessionSwitchPath = null;
     const live = getCurrentLiveSessionFile();
     if (live) sidebar.setStreaming(live, false);
-    window.tauriNative.switchSession(targetPath).catch((e) => {
+    foregroundPort = findPortForSession(liveInstances, targetPath, foregroundPort);
+    syncWorkspaceIndicatorFromInstances();
+    window.tauriNative.switchSession(targetPath, foregroundPort).catch((e) => {
       messageRenderer.renderError(`Failed to switch session: ${e}`);
     });
     return;
   }
 
-  const live = getCurrentLiveSessionFile();
+  const live = getCurrentLiveSessionFile(event);
   if (live) {
     sidebar.setStreaming(live, false);
     // If user is not currently viewing this session in the sidebar,
@@ -547,45 +651,6 @@ function handleAgentEnd() {
 }
 
 let currentStreamingThinking = "";
-
-// ─── Concurrent session background connections ─────────────────────────────
-// When the user switches sessions while one is streaming, we keep a lightweight
-// WebSocket listener on the old process port so its streaming events continue
-// updating the sidebar (green dot, unread badge) without interrupting the user.
-
-function addBackgroundConnection(port, sessionFile) {
-  if (backgroundConnections.has(port)) return;
-  const bgWs = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-  bgWs.onmessage = (e) => {
-    let msg;
-    try {
-      msg = JSON.parse(e.data);
-    } catch {
-      return;
-    }
-    if (msg.type !== "event") return;
-    const ev = msg.event;
-    if (ev.type === "agent_start") {
-      sidebar.setStreaming(sessionFile, true);
-    } else if (ev.type === "agent_end") {
-      sidebar.setStreaming(sessionFile, false);
-      if (sessionFile !== sidebar.activeSessionFile) sidebar.markUnread(sessionFile);
-      removeBackgroundConnection(port);
-      sidebar.loadSessions({ quiet: true }).catch(() => {});
-    }
-  };
-  bgWs.onclose = () => backgroundConnections.delete(port);
-  backgroundConnections.set(port, { ws: bgWs, sessionFile });
-  portSessionMap.set(port, sessionFile);
-}
-
-function removeBackgroundConnection(port) {
-  const conn = backgroundConnections.get(port);
-  if (conn) {
-    conn.ws.close();
-    backgroundConnections.delete(port);
-  }
-}
 
 function handleMessageStart(message) {
   if (message.role === "assistant") {
@@ -1506,6 +1571,21 @@ async function resetUiForNewSession() {
   sidebar.loadSessions().catch(() => {});
 }
 
+async function activateNewParallelSession(port, cwd) {
+  logSessionRoute("activateNewParallelSession:start", { port, cwd });
+  foregroundPort = port;
+  portSessionMap.delete(port);
+  if (cwd) updateWorkspaceIndicator(cwd);
+  wsClient.setRoutingContext({
+    workspaceId: `workspace:${cwd || getCurrentWorkspacePath() || "unknown"}`,
+    sessionId: null,
+    sourcePort: foregroundPort,
+  });
+  await resetUiForNewSession();
+  pollInstances().catch(() => {});
+  logSessionRoute("activateNewParallelSession:done", { port, cwd });
+}
+
 async function newSession() {
   if (window.tauriNative) {
     // Default behavior is process-efficient: create the new chat in-place on
@@ -1514,7 +1594,7 @@ async function newSession() {
     await startInWindowNewSession({
       tauriNative: window.tauriNative,
       getCurrentCwd: getCurrentWorkspacePath,
-      getCurrentPort,
+      getCurrentPort: getActivePort,
       fetchInstances,
       navigate: navigateInWindow,
       onBeforeSwap: onBeforeInstanceSwap,
@@ -1522,6 +1602,7 @@ async function newSession() {
       onInPlaceSessionCreated: () => {
         resetUiForNewSession().catch(() => {});
       },
+      onParallelSessionCreated: activateNewParallelSession,
       renderError: (message) => messageRenderer.renderError(message),
     });
     return;
@@ -1553,12 +1634,13 @@ async function handleNewProjectChat(project) {
     const launched = await startNewProjectChat({
       project,
       tauriNative: window.tauriNative,
-      getCurrentPort,
+      getCurrentPort: getActivePort,
       getCurrentCwd: getCurrentWorkspacePath,
       shouldSpawnParallel: () => state.isStreaming,
       onInPlaceSessionCreated: () => {
         resetUiForNewSession().catch(() => {});
       },
+      onParallelSessionCreated: activateNewParallelSession,
       fetchInstances,
       navigate: navigateInWindow,
       onBeforeSwap: onBeforeInstanceSwap,
@@ -1575,8 +1657,52 @@ async function handleNewProjectChat(project) {
   }
 }
 
-async function handleSessionSelect(session, project) {
+// Public entry point: serializes selections so overlapping clicks don't
+// interleave their awaits and corrupt shared routing state.
+function handleSessionSelect(session, project) {
+  const run = sessionSelectChain.then(() => handleSessionSelectImpl(session, project));
+  // Keep the chain alive even if this selection rejects.
+  sessionSelectChain = run.catch(() => {});
+  return run;
+}
+
+async function handleSessionSelectImpl(session, project) {
+  logSessionRoute("select:start", {
+    selectedSession: session?.filePath,
+    projectPath: project?.path,
+    projectDir: project?.dirName,
+    liveInstances,
+  });
+  // An explicit session selection supersedes any pending deferred switch.
+  // Leaving it set would (a) suppress all live rendering for the newly
+  // selected session via the `pendingSessionSwitchPath` guard in
+  // `handleRPCEvent`, and (b) yank the user to the stale deferred target on
+  // the next `agent_end`. Clearing it here is what keeps tool-call/streaming
+  // updates flowing after an A → B → A switch.
+  if (pendingSessionSwitchPath && pendingSessionSwitchPath !== session.filePath) {
+    logSessionRoute("select:clear-stale-deferred", {
+      pendingSessionSwitchPath,
+      selectedSession: session?.filePath,
+    });
+    pendingSessionSwitchPath = null;
+  }
   sidebar.setActive(session.filePath);
+  const targetLiveInstance = liveInstances.find(
+    (instance) => instance.sessionFile === session.filePath,
+  );
+  foregroundPort = findPortForSession(liveInstances, session.filePath, foregroundPort);
+  syncWorkspaceIndicatorFromInstances();
+  if (session.filePath) {
+    wsClient.setRoutingContext({
+      workspaceId: `workspace:${project?.path || getCurrentWorkspacePath() || "unknown"}`,
+      sessionId: session.filePath,
+      sourcePort: foregroundPort,
+    });
+  }
+  logSessionRoute("select:routed", {
+    selectedSession: session.filePath,
+    targetLiveInstance,
+  });
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
@@ -1584,51 +1710,27 @@ async function handleSessionSelect(session, project) {
 
   // In Tauri: switch session via RPC command to the current pi instance
   if (window.tauriNative && session.filePath) {
-    // ── Case 1: Target session is already running on a background process ──
-    // Promote it to foreground without spawning anything new.
-    const bgEntry = [...backgroundConnections.entries()].find(
-      ([, c]) => c.sessionFile === session.filePath,
-    );
-    if (bgEntry) {
-      const [bgPort] = bgEntry;
-      // Move current foreground to background if it is still streaming
-      if (state.isStreaming) {
-        const currentSF = portSessionMap.get(foregroundPort);
-        if (currentSF) addBackgroundConnection(foregroundPort, currentSF);
-      }
-      removeBackgroundConnection(bgPort);
-      foregroundPort = bgPort;
-      portSessionMap.set(bgPort, session.filePath);
-      wsClient.disconnect();
-      wsClient.url = `ws://127.0.0.1:${bgPort}/ws`;
-      wsClient.forceReconnect();
-      clearMessageQueue();
-      state.reset();
-      // Restore streaming state if A's task is still running in the background.
-      // state.reset() clears isStreaming, but pi won't re-emit agent_start for
-      // an in-progress run, so we have to recover the flag from sidebar state.
-      if (sidebar.isStreaming(session.filePath)) {
-        state.setStreaming(true);
-        showTypingIndicator(true);
-      }
-      updateUI();
-      messageRenderer.clear();
-      toolCardRenderer.clear();
-      if (session && project) {
-        messageRenderer.renderSystemMessage("Loading session…");
-        const dirName = project?.dirName;
-        const file = session.file;
-        if (dirName && file) {
-          try {
-            const res = await fetch(`/api/sessions/${dirName}/${file}`);
-            const data = await res.json();
-            messageRenderer.clear();
-            renderSessionHistory(data.entries || []);
-          } catch (e) {
-            messageRenderer.renderError(`Failed to load session: ${e}`);
-          }
-        }
-      }
+    const wasStreaming = state.isStreaming;
+    clearMessageQueue();
+    state.reset();
+    if (sidebar.isStreaming(session.filePath)) {
+      state.setStreaming(true);
+      showTypingIndicator(true);
+    } else {
+      showTypingIndicator(false);
+    }
+    updateUI();
+    await renderSelectedSessionHistory(session, project);
+
+    if (targetLiveInstance) {
+      logSessionRoute("select:target-live-sync", {
+        selectedSession: session.filePath,
+        targetPort: targetLiveInstance.port,
+      });
+      mirrorActiveSessionFile = session.filePath;
+      viewingActiveSession = true;
+      updateMirrorInputState();
+      wsClient.send({ type: "mirror_sync_request" });
       if (isMobile()) {
         sidebarEl.classList.add("collapsed");
         sidebarOverlay.classList.remove("visible");
@@ -1636,8 +1738,7 @@ async function handleSessionSelect(session, project) {
       return;
     }
 
-    // ── Case 2: Currently streaming — try concurrent spawn ──
-    if (state.isStreaming) {
+    if (wasStreaming) {
       if (window.tauriNative.spawnSessionProcess) {
         let targetPort = null;
         try {
@@ -1650,35 +1751,19 @@ async function handleSessionSelect(session, project) {
           );
         }
         if (targetPort != null) {
-          // Move current foreground session to a background connection
-          const currentSF = portSessionMap.get(foregroundPort);
-          if (currentSF) addBackgroundConnection(foregroundPort, currentSF);
-          // Switch foreground to new dedicated process
+          logSessionRoute("select:spawned-dedicated", {
+            selectedSession: session.filePath,
+            targetPort,
+          });
           foregroundPort = targetPort;
           portSessionMap.set(targetPort, session.filePath);
-          wsClient.disconnect();
-          wsClient.url = `ws://127.0.0.1:${targetPort}/ws`;
-          wsClient.forceReconnect();
-          clearMessageQueue();
-          state.reset();
-          updateUI();
-          messageRenderer.clear();
-          toolCardRenderer.clear();
-          if (session && project) {
-            messageRenderer.renderSystemMessage("Loading session…");
-            const dirName = project?.dirName;
-            const file = session.file;
-            if (dirName && file) {
-              try {
-                const res = await fetch(`/api/sessions/${dirName}/${file}`);
-                const data = await res.json();
-                messageRenderer.clear();
-                renderSessionHistory(data.entries || []);
-              } catch (e) {
-                messageRenderer.renderError(`Failed to load session: ${e}`);
-              }
-            }
-          }
+          wsClient.setRoutingContext({
+            sessionId: session.filePath,
+            sourcePort: foregroundPort,
+          });
+          syncWorkspaceIndicatorFromInstances();
+          pollInstances().catch(() => {});
+          wsClient.send({ type: "mirror_sync_request" });
           if (isMobile()) {
             sidebarEl.classList.add("collapsed");
             sidebarOverlay.classList.remove("visible");
@@ -1690,23 +1775,6 @@ async function handleSessionSelect(session, project) {
       // This preserves the old safe behavior when spawn is unavailable or fails.
       pendingSessionSwitchPath = session.filePath;
       updateUI();
-      messageRenderer.clear();
-      toolCardRenderer.clear();
-      if (session && project) {
-        messageRenderer.renderSystemMessage("Loading session…");
-        const dirName = project?.dirName;
-        const file = session.file;
-        if (dirName && file) {
-          try {
-            const res = await fetch(`/api/sessions/${dirName}/${file}`);
-            const data = await res.json();
-            messageRenderer.clear();
-            renderSessionHistory(data.entries || []);
-          } catch (e) {
-            messageRenderer.renderError(`Failed to load session: ${e}`);
-          }
-        }
-      }
       if (isMobile()) {
         sidebarEl.classList.add("collapsed");
         sidebarOverlay.classList.remove("visible");
@@ -1714,30 +1782,13 @@ async function handleSessionSelect(session, project) {
       return;
     }
 
-    // ── Case 3: Not streaming — normal session switch ──
-    // Pre-load the target session's UI so the frontend doesn't wait on pi to
-    // send a session_switch event (which carries no payload and was a no-op).
-    state.reset();
-    updateUI();
-    messageRenderer.clear();
-    toolCardRenderer.clear();
-    if (session && project) {
-      messageRenderer.renderSystemMessage("Loading session…");
-      const dirName = project?.dirName;
-      const file = session.file;
-      if (dirName && file) {
-        try {
-          const res = await fetch(`/api/sessions/${dirName}/${file}`);
-          const data = await res.json();
-          messageRenderer.clear();
-          renderSessionHistory(data.entries || []);
-        } catch (e) {
-          messageRenderer.renderError(`Failed to load session: ${e}`);
-        }
-      }
-    }
     try {
-      await window.tauriNative.switchSession(session.filePath);
+      logSessionRoute("select:switch-current-process", {
+        selectedSession: session.filePath,
+        targetPort: foregroundPort,
+      });
+      await window.tauriNative.switchSession(session.filePath, foregroundPort);
+      wsClient.send({ type: "mirror_sync_request" });
     } catch (e) {
       messageRenderer.renderError(`Failed to switch session: ${e}`);
     }
@@ -1754,6 +1805,56 @@ async function handleSessionSelect(session, project) {
   if (isMobile()) {
     sidebarEl.classList.add("collapsed");
     sidebarOverlay.classList.remove("visible");
+  }
+}
+
+async function renderSelectedSessionHistory(session, project) {
+  messageRenderer.clear();
+  toolCardRenderer.clear();
+  if (!session || !project) {
+    renderWorkspaceWelcome();
+    return;
+  }
+
+  messageRenderer.renderSystemMessage("Loading session…");
+  const dirName = project?.dirName;
+  const file = session.file;
+  if (!dirName || !file) {
+    logSessionRoute("history:skip-missing-path", {
+      selectedSession: session?.filePath,
+      dirName,
+      file,
+    });
+    return;
+  }
+
+  try {
+    const url = `/api/sessions/${dirName}/${file}`;
+    logSessionRoute("history:fetch", {
+      url,
+      selectedSession: session.filePath,
+      dirName,
+      file,
+    });
+    const res = await fetch(url);
+    logSessionRoute("history:fetch-result", {
+      url,
+      status: res.status,
+      ok: res.ok,
+    });
+    const data = await res.json();
+    messageRenderer.clear();
+    logSessionRoute("history:render", {
+      selectedSession: session.filePath,
+      entries: data.entries?.length || 0,
+    });
+    renderSessionHistory(data.entries || []);
+  } catch (e) {
+    console.error("[Session route] history:fetch-error", {
+      selectedSession: session?.filePath,
+      error: e,
+    });
+    messageRenderer.renderError(`Failed to load session: ${e}`);
   }
 }
 
@@ -1791,20 +1892,19 @@ async function switchSession(sessionFile, session = null, project = null) {
 
     // In mirror mode, check if this session is live on any instance
     if (isMirrorMode) {
-      // Check if this session is live on a different instance
-      const otherInstance = liveInstances.find(
-        (i) => i.sessionFile === sessionFile && i.port !== new URL(wsClient.url).port * 1,
-      );
-      if (otherInstance) {
-        // Reconnect to the other instance
-        const newUrl = `ws://${location.hostname}:${otherInstance.port}/ws`;
-        console.log(`[App] Switching to instance on port ${otherInstance.port}`);
-        wsClient.disconnect();
-        wsClient.url = newUrl;
-        wsClient.forceReconnect();
+      const liveInstance = liveInstances.find((i) => i.sessionFile === sessionFile);
+      if (liveInstance) {
+        foregroundPort = liveInstance.port;
+        syncWorkspaceIndicatorFromInstances();
         mirrorActiveSessionFile = sessionFile;
         viewingActiveSession = true;
+        wsClient.setRoutingContext({
+          workspaceId: `workspace:${liveInstance.cwd || getCurrentWorkspacePath() || "unknown"}`,
+          sessionId: sessionFile,
+          sourcePort: foregroundPort,
+        });
         updateMirrorInputState();
+        wsClient.send({ type: "mirror_sync_request" });
         return;
       }
 
@@ -1839,8 +1939,39 @@ async function switchSession(sessionFile, session = null, project = null) {
 // ═══════════════════════════════════════
 
 function handleMirrorSync(data) {
+  logSessionRoute("mirrorSync:received", {
+    sessionFile: data.sessionFile,
+    sessionId: data.sessionId,
+    workspaceId: data.workspaceId,
+    entries: data.entries?.length || 0,
+    isStreaming: data.isStreaming,
+  });
   if (!sessionsLoaded) {
     deferredMirrorSync = data;
+    return;
+  }
+
+  // The broker broadcasts every upstream's `mirror_sync` to all UI clients,
+  // including snapshots a *background* pi process emits on its own
+  // `session_start` (e.g. the previously-running session that keeps streaming
+  // after the user switched to an older session). Such a stray snapshot must
+  // NOT hijack the foreground UI: applying it would clobber the rendered
+  // history AND — critically — reset the routing context to the background
+  // process's session/port, causing the user's next message to be sent into
+  // that previous session instead of the one they're now viewing.
+  const syncPort = typeof data.port === "number" ? data.port : null;
+  if (syncPort !== null && typeof foregroundPort === "number" && syncPort !== foregroundPort) {
+    logSessionRoute("mirrorSync:ignored-background", {
+      syncPort,
+      foregroundPort,
+      sessionFile: data.sessionFile,
+    });
+    const bgFile = data.sessionFile || data.sessionId;
+    if (bgFile) {
+      const bgStreaming = Boolean(data.isStreaming);
+      sidebar.setStreaming(bgFile, bgStreaming);
+      updateMirrorLiveIndicator();
+    }
     return;
   }
 
@@ -1853,10 +1984,21 @@ function handleMirrorSync(data) {
   wsClient.setRoutingContext({
     workspaceId: data.workspaceId || `workspace:${getCurrentWorkspacePath() || "unknown"}`,
     sessionId: data.sessionId || data.sessionFile || null,
+    sourcePort: data.port || foregroundPort,
   });
   viewingActiveSession = true;
-  state.setStreaming(Boolean(data.isStreaming));
-  showTypingIndicator(Boolean(data.isStreaming));
+  // The snapshot's `isStreaming` comes from the pi process's instantaneous
+  // `!ctx.isIdle()`, which can momentarily read false between messages / tool
+  // calls of an agent run that is still actively going. The sidebar's
+  // streaming set is driven by real `agent_start` / `agent_end` events and is
+  // the more reliable signal for a background session we're switching into, so
+  // OR the two: only treat the session as idle when both agree it is idle.
+  const liveFile = data.sessionFile || mirrorActiveSessionFile;
+  const sidebarStreaming = liveFile ? sidebar.isStreaming(liveFile) : false;
+  const isStreaming = Boolean(data.isStreaming) || sidebarStreaming;
+  state.setStreaming(isStreaming);
+  showTypingIndicator(isStreaming);
+  if (liveFile) sidebar.setStreaming(liveFile, isStreaming);
   updateMirrorInputState();
   updateMirrorLiveIndicator();
   updateUI();
@@ -1914,6 +2056,10 @@ async function pollInstances() {
     if (res.ok) {
       const data = await res.json();
       liveInstances = data.instances || [];
+      logSessionRoute("instances:poll", {
+        count: liveInstances.length,
+        instances: liveInstances,
+      });
       updateMirrorLiveIndicator();
       syncWorkspaceIndicatorFromInstances();
       if (document.querySelector(".welcome")) {
@@ -2345,7 +2491,16 @@ const browseListEl = document.getElementById("pkg-browse-list");
 const browseSearchEl = document.getElementById("pkg-browse-search");
 const browsePillsEl = document.getElementById("pkg-browse-pills");
 const browseCountEl = document.getElementById("pkg-browse-count");
+let browsePaginationEl = document.getElementById("pkg-browse-pagination");
+if (!browsePaginationEl && browseListEl && browseListEl.parentNode) {
+  browsePaginationEl = document.createElement("div");
+  browsePaginationEl.className = "pkg-browse-pagination";
+  browsePaginationEl.id = "pkg-browse-pagination";
+  browsePaginationEl.hidden = true;
+  browseListEl.parentNode.insertBefore(browsePaginationEl, browseListEl.nextSibling);
+}
 const browseInstalledOnlyEl = document.getElementById("pkg-browse-installed-only");
+const browseSortEl = document.getElementById("pkg-browse-sort");
 
 let browseAllPackages = null;
 let browseInstalledSet = new Set();
@@ -2354,7 +2509,10 @@ let browseLoading = false;
 let browseActiveType = "all";
 let browseSearchQuery = "";
 let browseInstalledOnly = false;
+let browseSortMode = "downloads";
 let browseSearchTimer = null;
+let browsePage = 1;
+const BROWSE_PAGE_SIZE = 50;
 
 async function loadBrowsePackages(force = false) {
   if (!browseListEl) return;
@@ -2386,10 +2544,19 @@ async function loadBrowsePackages(force = false) {
 }
 
 async function fetchBrowsePackages() {
-  const res = await fetch(`${PKG_API_BASE}/packages`);
-  if (!res.ok) throw new Error(`Registry returned ${res.status}`);
-  const data = await res.json();
-  return Array.isArray(data?.packages) ? data.packages : [];
+  const pageSize = 250;
+  const all = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const res = await fetch(`${PKG_API_BASE}/packages?page=${page}&pageSize=${pageSize}`);
+    if (!res.ok) throw new Error(`Registry returned ${res.status}`);
+    const data = await res.json();
+    if (Array.isArray(data?.packages)) all.push(...data.packages);
+    totalPages = Number(data?.totalPages) || 1;
+    page += 1;
+  } while (page <= totalPages);
+  return all;
 }
 
 async function fetchInstalledSources() {
@@ -2471,10 +2638,34 @@ function buildBrowseLinks(pkg) {
   return container;
 }
 
+function browseUpdatedTime(pkg) {
+  const raw = pkg.updatedAt || pkg.updated || pkg.modified || pkg.date || pkg.time || 0;
+  const t = typeof raw === "number" ? raw : Date.parse(raw);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function sortBrowsePackages(packages) {
+  const sorted = packages.slice();
+  switch (browseSortMode) {
+    case "name":
+      sorted.sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }),
+      );
+      break;
+    case "updated":
+      sorted.sort((a, b) => browseUpdatedTime(b) - browseUpdatedTime(a));
+      break;
+    default:
+      sorted.sort((a, b) => (b.downloads || 0) - (a.downloads || 0));
+      break;
+  }
+  return sorted;
+}
+
 function filterBrowsePackages() {
   if (!browseAllPackages) return [];
   const query = browseSearchQuery.toLowerCase().trim();
-  return browseAllPackages.filter((pkg) => {
+  const filtered = browseAllPackages.filter((pkg) => {
     if (browseInstalledOnly && !browseInstalledSet.has(browseSourceFor(pkg))) return false;
     if (browseActiveType !== "all") {
       if (!Array.isArray(pkg.types) || !pkg.types.includes(browseActiveType)) return false;
@@ -2487,24 +2678,92 @@ function filterBrowsePackages() {
     }
     return true;
   });
+  return sortBrowsePackages(filtered);
 }
 
 function renderBrowsePackages() {
   if (!browseListEl) return;
   const results = filterBrowsePackages();
+
+  const totalPages = Math.max(1, Math.ceil(results.length / BROWSE_PAGE_SIZE));
+  if (browsePage > totalPages) browsePage = totalPages;
+  if (browsePage < 1) browsePage = 1;
+  const start = (browsePage - 1) * BROWSE_PAGE_SIZE;
+  const pageResults = results.slice(start, start + BROWSE_PAGE_SIZE);
+
   if (browseCountEl) {
-    const total = browseAllPackages ? browseAllPackages.length : 0;
-    browseCountEl.textContent = `${results.length} of ${total}`;
+    if (results.length === 0) {
+      browseCountEl.textContent = `0 of ${results.length}`;
+    } else {
+      const rangeStart = start + 1;
+      const rangeEnd = start + pageResults.length;
+      browseCountEl.textContent = `${rangeStart}–${rangeEnd} of ${results.length}`;
+    }
   }
+
   browseListEl.innerHTML = "";
   if (!results.length) {
     browseListEl.innerHTML =
       '<div class="settings-api-keys-empty pkg-browse-full-row">No packages match your filters.</div>';
+    renderBrowsePagination(totalPages);
     return;
   }
-  for (const pkg of results) {
+  for (const pkg of pageResults) {
     browseListEl.appendChild(createBrowseRow(pkg));
   }
+  renderBrowsePagination(totalPages);
+}
+
+function renderBrowsePagination(totalPages) {
+  if (!browsePaginationEl) return;
+  if (totalPages <= 1) {
+    browsePaginationEl.hidden = true;
+    browsePaginationEl.innerHTML = "";
+    return;
+  }
+  browsePaginationEl.hidden = false;
+  browsePaginationEl.innerHTML = "";
+
+  const goTo = (page) => {
+    browsePage = page;
+    renderBrowsePackages();
+    if (browseListEl) browseListEl.scrollIntoView({ block: "nearest" });
+  };
+
+  const addBtn = (label, page, { active = false, disabled = false } = {}) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pkg-browse-page-btn" + (active ? " is-active" : "");
+    btn.textContent = label;
+    btn.disabled = disabled;
+    if (!disabled && !active) btn.addEventListener("click", () => goTo(page));
+    browsePaginationEl.appendChild(btn);
+  };
+
+  const addEllipsis = () => {
+    const span = document.createElement("span");
+    span.className = "pkg-browse-page-ellipsis";
+    span.textContent = "…";
+    browsePaginationEl.appendChild(span);
+  };
+
+  addBtn("‹", browsePage - 1, { disabled: browsePage <= 1 });
+
+  const pages = new Set([1, totalPages, browsePage]);
+  for (let d = 1; d <= 2; d++) {
+    pages.add(browsePage - d);
+    pages.add(browsePage + d);
+  }
+  const visible = [...pages].filter((p) => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+
+  let prev = 0;
+  for (const p of visible) {
+    if (p - prev > 1) addEllipsis();
+    addBtn(String(p), p, { active: p === browsePage });
+    prev = p;
+  }
+
+  addBtn("›", browsePage + 1, { disabled: browsePage >= totalPages });
 }
 
 function createBrowseRow(pkg) {
@@ -2606,6 +2865,7 @@ if (browsePillsEl) {
     for (const p of browsePillsEl.querySelectorAll(".pkg-browse-pill")) {
       p.classList.toggle("active", p === pill);
     }
+    browsePage = 1;
     renderBrowsePackages();
   });
 }
@@ -2615,6 +2875,7 @@ if (browseSearchEl) {
     clearTimeout(browseSearchTimer);
     browseSearchTimer = setTimeout(() => {
       browseSearchQuery = browseSearchEl.value;
+      browsePage = 1;
       renderBrowsePackages();
     }, 180);
   });
@@ -2623,6 +2884,16 @@ if (browseSearchEl) {
 if (browseInstalledOnlyEl) {
   browseInstalledOnlyEl.addEventListener("change", () => {
     browseInstalledOnly = browseInstalledOnlyEl.checked;
+    browsePage = 1;
+    renderBrowsePackages();
+  });
+}
+
+if (browseSortEl) {
+  browseSortEl.value = browseSortMode;
+  browseSortEl.addEventListener("change", () => {
+    browseSortMode = browseSortEl.value || "downloads";
+    browsePage = 1;
     renderBrowsePackages();
   });
 }
@@ -2826,7 +3097,7 @@ openFolderBtn?.addEventListener("click", async () => {
     await openFolderAsWorkspace({
       tauriNative: window.tauriNative,
       fetchInstances,
-      getCurrentPort,
+      getCurrentPort: getActivePort,
       navigate: navigateInWindow,
       onBeforeSwap: onBeforeInstanceSwap,
       renderError: (message) => messageRenderer.renderError(message),
