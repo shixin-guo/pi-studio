@@ -1,6 +1,6 @@
 {
   "name": "pi-studio",
-  "version": "0.1.26-3",
+  "version": "0.1.27",
   "description": "Local Codex-style desktop GUI for the Pi coding agent",
   "keywords": [
     "pi",
