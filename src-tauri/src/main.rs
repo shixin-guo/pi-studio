@@ -321,46 +321,51 @@ fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), Str
     Ok(())
 }
 
+fn canonical_if_exists(dir: PathBuf) -> Option<PathBuf> {
+    if dir.join("index.html").exists() {
+        Some(fs::canonicalize(&dir).unwrap_or(dir))
+    } else {
+        None
+    }
+}
+
+fn resolve_static_dir(
+    resource_dir: Option<PathBuf>,
+    workspace_public: PathBuf,
+    current_dir: Option<PathBuf>,
+    debug_assertions: bool,
+) -> PathBuf {
+    let bundled_public = resource_dir.as_ref().map(|dir| dir.join("public"));
+    let current_public = current_dir.unwrap_or_default().join("public");
+
+    if debug_assertions {
+        if let Some(dir) = canonical_if_exists(workspace_public) {
+            return dir;
+        }
+        if let Some(dir) = canonical_if_exists(current_public.clone()) {
+            return dir;
+        }
+        return current_public;
+    }
+
+    if let Some(dir) = bundled_public.and_then(canonical_if_exists) {
+        return dir;
+    }
+
+    resource_dir
+        .map(|dir| dir.join("public"))
+        .unwrap_or_else(|| PathBuf::from("public"))
+}
+
 fn find_static_dir(app: &tauri::App) -> PathBuf {
-    // Release builds: ALWAYS prefer the bundled resource dir. We must check
-    // this first because `CARGO_MANIFEST_DIR` is a compile-time string that
-    // gets baked into the binary, so on a developer's machine that string
-    // still resolves to a real `public/` directory (the repo) and would
-    // shadow the bundled resources — making `static_dir.parent()/pi/pi`
-    // resolve to `<repo>/pi/pi`, which doesn't exist, with the misleading
-    // "run bun run fetch:pi" error.
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join("public");
-        if bundled.join("index.html").exists() {
-            return fs::canonicalize(&bundled).unwrap_or(bundled);
-        }
-    }
-
-    // Debug builds (`tauri dev`): the bundle isn't assembled yet, so fall
-    // back to the repo's `public/`. `CARGO_MANIFEST_DIR` is fine here
-    // because debug builds are only ever run on the build machine.
-    if cfg!(debug_assertions) {
-        let workspace_public = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    resolve_static_dir(
+        app.path().resource_dir().ok(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("public");
-        if workspace_public.join("index.html").exists() {
-            return fs::canonicalize(&workspace_public).unwrap_or(workspace_public);
-        }
-
-        let dev_path = std::env::current_dir().unwrap_or_default().join("public");
-        if dev_path.join("index.html").exists() {
-            return fs::canonicalize(&dev_path).unwrap_or(dev_path);
-        }
-        return dev_path;
-    }
-
-    // Release build with no resource dir found: return the bundled path
-    // anyway so the downstream "could not find pi binary" error points at
-    // the actual install location instead of a stale dev path.
-    app.path()
-        .resource_dir()
-        .map(|d| d.join("public"))
-        .unwrap_or_else(|_| PathBuf::from("public"))
+            .join("public"),
+        std::env::current_dir().ok(),
+        cfg!(debug_assertions),
+    )
 }
 
 fn list_session_files(root: &PathBuf) -> Vec<PathBuf> {
@@ -385,6 +390,45 @@ fn list_session_files(root: &PathBuf) -> Vec<PathBuf> {
     }
 
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_static_dir;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("pi-studio-{label}-{suffix}"))
+    }
+
+    #[test]
+    fn debug_build_prefers_workspace_public_over_bundled_copy() {
+        let root = unique_temp_dir("static-dir-debug");
+        let workspace_public = root.join("workspace").join("public");
+        let bundled_public = root.join("bundled").join("public");
+
+        fs::create_dir_all(&workspace_public).unwrap();
+        fs::create_dir_all(&bundled_public).unwrap();
+        fs::write(workspace_public.join("index.html"), "workspace").unwrap();
+        fs::write(bundled_public.join("index.html"), "bundled").unwrap();
+
+        let resolved = resolve_static_dir(
+            Some(root.join("bundled")),
+            workspace_public.clone(),
+            Some(root.join("workspace")),
+            true,
+        );
+
+        assert_eq!(resolved, fs::canonicalize(&workspace_public).unwrap());
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 fn extract_session_cwd(session_path: &PathBuf) -> Option<String> {

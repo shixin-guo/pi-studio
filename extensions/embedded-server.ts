@@ -34,6 +34,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildCostDashboardPayload, buildEmptyCostDashboardPayload } from "./cost-dashboard-data.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -1706,7 +1707,7 @@ export default function (pi: ExtensionAPI) {
     const parsed = new URL(reqUrl, "http://localhost");
     const range = (parsed.searchParams.get("range") || "30d").toLowerCase();
     const granularity = (parsed.searchParams.get("granularity") || "day").toLowerCase();
-    const scope = (parsed.searchParams.get("scope") || "current").toLowerCase();
+    const scope = (parsed.searchParams.get("scope") || "all").toLowerCase();
     const modelsParam = parsed.searchParams.get("models") || "";
     const models = new Set(
       modelsParam
@@ -1744,21 +1745,6 @@ export default function (pi: ExtensionAPI) {
       scope: scope === "all" ? "all" : "current",
       models,
     };
-  }
-
-  function bucketForDate(date: Date, granularity: string): string {
-    const year = date.getUTCFullYear();
-    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(date.getUTCDate()).padStart(2, "0");
-    if (granularity === "day") return `${year}-${month}-${day}`;
-    if (granularity === "month") return `${year}-${month}`;
-    const tmp = new Date(Date.UTC(year, date.getUTCMonth(), date.getUTCDate()));
-    const dayNum = tmp.getUTCDay() || 7;
-    tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
-    const weekYear = tmp.getUTCFullYear();
-    const yearStart = new Date(Date.UTC(weekYear, 0, 1));
-    const weekNo = Math.ceil(((tmp.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-    return `${weekYear}-W${String(weekNo).padStart(2, "0")}`;
   }
 
   async function parseSessionMetrics(filePath: string, readline: any) {
@@ -1869,16 +1855,7 @@ export default function (pi: ExtensionAPI) {
     try {
       if (!fs.existsSync(SESSIONS_DIR)) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            range: {},
-            summary: { totalCost: 0, totalTokens: 0, sessionCount: 0, userMessageCount: 0 },
-            series: [],
-            breakdown: { byModel: [], byTool: [] },
-            sessions: [],
-            topSessions: [],
-          }),
-        );
+        res.end(JSON.stringify(buildEmptyCostDashboardPayload()));
         return;
       }
 
@@ -1954,9 +1931,12 @@ export default function (pi: ExtensionAPI) {
             totalCost: parsed.totalCost,
             inputTokens: parsed.inputTokens,
             outputTokens: parsed.outputTokens,
+            cacheRead: parsed.cacheRead,
+            cacheWrite: parsed.cacheWrite,
             totalTokens: parsed.inputTokens + parsed.outputTokens + parsed.cacheRead,
             toolCalls: parsed.toolCalls,
             userMessages: parsed.userMessages,
+            assistantMessages: parsed.assistantMessages,
             costPerUserMessage:
               parsed.userMessages > 0 ? parsed.totalCost / parsed.userMessages : parsed.totalCost,
             toolCostByName: parsed.toolCostByName || {},
@@ -1964,70 +1944,10 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      sessions.sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
-
-      const summary = {
-        totalCost: 0,
-        totalTokens: 0,
-        sessionCount: sessions.length,
-        userMessageCount: 0,
-        avgCostPerSession: 0,
-        avgCostPerUserMessage: 0,
-      };
-      const byModel = new Map<string, number>();
-      const byTool = new Map<string, number>();
-      const byBucket = new Map<string, { cost: number; tokens: number }>();
-
-      for (const s of sessions) {
-        summary.totalCost += s.totalCost;
-        summary.totalTokens += s.totalTokens;
-        summary.userMessageCount += s.userMessages;
-        byModel.set(s.model, (byModel.get(s.model) || 0) + s.totalCost);
-        for (const [toolName, toolCost] of Object.entries(s.toolCostByName || {})) {
-          byTool.set(toolName, (byTool.get(toolName) || 0) + Number(toolCost || 0));
-        }
-        const bucket = bucketForDate(new Date(s.time), params.granularity);
-        const current = byBucket.get(bucket) || { cost: 0, tokens: 0 };
-        current.cost += s.totalCost;
-        current.tokens += s.totalTokens;
-        byBucket.set(bucket, current);
-      }
-
-      summary.avgCostPerSession =
-        summary.sessionCount > 0 ? summary.totalCost / summary.sessionCount : 0;
-      summary.avgCostPerUserMessage =
-        summary.userMessageCount > 0 ? summary.totalCost / summary.userMessageCount : 0;
-
-      const series = Array.from(byBucket.entries())
-        .map(([bucket, value]) => ({ bucket, cost: value.cost, tokens: value.tokens }))
-        .sort((a, b) => a.bucket.localeCompare(b.bucket));
-
-      const topSessions = [...sessions].sort((a, b) => b.totalCost - a.totalCost).slice(0, 20);
+      const payload = buildCostDashboardPayload(sessions, params, new Date());
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          range: {
-            from: params.from.toISOString(),
-            to: params.to.toISOString(),
-            granularity: params.granularity,
-            scope: params.scope,
-            range: params.range,
-          },
-          summary,
-          series,
-          breakdown: {
-            byModel: Array.from(byModel.entries())
-              .map(([name, cost]) => ({ name, cost }))
-              .sort((a, b) => b.cost - a.cost),
-            byTool: Array.from(byTool.entries())
-              .map(([name, cost]) => ({ name, cost }))
-              .sort((a, b) => b.cost - a.cost),
-          },
-          topSessions,
-          sessions,
-        }),
-      );
+      res.end(JSON.stringify(payload));
     } catch (e: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: e?.message || "Failed to build cost dashboard" }));

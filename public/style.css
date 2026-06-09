@@ -896,8 +896,8 @@ body {
    ═══════════════════════════════════════════════════════ */
 
 .main {
-  --messages-top-inset: 68px;
-  --messages-bottom-inset: 100px;
+  --messages-top-inset: 52px;
+  --messages-bottom-inset: 86px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -911,12 +911,12 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
+  padding: 5px 14px;
   background: var(--header-bg);
   backdrop-filter: blur(40px) saturate(1.5);
   -webkit-backdrop-filter: blur(40px) saturate(1.5);
   border-bottom: 1px solid var(--border);
-  min-height: 44px;
+  min-height: 36px;
   -webkit-app-region: drag;
   position: absolute;
   top: 0;
@@ -2525,7 +2525,7 @@ body {
 /* Welcome */
 .welcome {
   text-align: center;
-  padding: 80px 20px 40px;
+  padding: 48px 20px 32px;
   color: var(--text-dim);
   animation: fadeIn 0.5s var(--ease);
 }
@@ -2630,12 +2630,12 @@ body {
 
 /* biome-ignore lint/style/noDescendingSpecificity: base styles defined after scoped overrides intentionally */
 .message-content {
-  padding: 8px 16px;
+  padding: 7px 14px;
   border-radius: var(--radius-lg);
   word-wrap: break-word;
   overflow-wrap: break-word;
   font-size: 14px;
-  line-height: 1.75;
+  line-height: 1.6;
 }
 
 /* User bubble */
@@ -3352,7 +3352,7 @@ body.hide-thinking .thinking-block {
 }
 
 .input-area {
-  padding: 10px 20px 12px;
+  padding: 7px 16px 10px;
   background: var(--header-bg);
   backdrop-filter: blur(40px) saturate(1.5);
   -webkit-backdrop-filter: blur(40px) saturate(1.5);

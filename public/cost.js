@@ -1,22 +1,9 @@
+import { renderCostInfobar } from "./cost-infobar.js";
+
 const scopeSelect = document.getElementById("scope-select");
-const rangeSelect = document.getElementById("range-select");
-
-const applyFiltersBtn = document.getElementById("apply-filters-btn");
-const resetFiltersBtn = document.getElementById("reset-filters-btn");
-
-const kpiTotalCost = document.getElementById("kpi-total-cost");
-const kpiTotalTokens = document.getElementById("kpi-total-tokens");
-const kpiCostSession = document.getElementById("kpi-cost-session");
-const kpiCostMessage = document.getElementById("kpi-cost-message");
-
-const trendBarsEl = document.getElementById("trend-bars");
-const trendEmptyEl = document.getElementById("trend-empty");
-const modelBreakdownEl = document.getElementById("model-breakdown");
-const toolBreakdownEl = document.getElementById("tool-breakdown");
-
-const allSessionsEl = document.getElementById("all-sessions");
-
-let _currentPayload = null;
+let currentRange = "30d";
+const infobarSectionEl = document.getElementById("infobar-cost-section");
+const rangeChips = Array.from(document.querySelectorAll("[data-range-chip]"));
 
 if (window.self !== window.top) {
   document.body.classList.add("embedded-cost-view");
@@ -28,7 +15,6 @@ function syncThemeFromParent() {
   try {
     parentRoot = window.parent?.document?.documentElement;
   } catch {
-    // Cross-origin: fall back to localStorage / OS preference.
     parentRoot = null;
   }
 
@@ -44,16 +30,10 @@ function syncThemeFromParent() {
         applyTheme(parentRoot.getAttribute("data-theme"));
       });
       observer.observe(parentRoot, { attributes: true, attributeFilter: ["data-theme"] });
-    } catch {
-      // ignore observer setup failure
-    }
+    } catch {}
     return;
   }
 
-  // Cross-origin fallback: read the same cookie the parent persists.
-  // (Themes are stored in a cookie rather than localStorage so they
-  // survive across the different `localhost:<port>` origins Pi Studio
-  // uses for each workspace — see public/themes.js for details.)
   try {
     const saved = readThemeCookie();
     if (saved === "dark") applyTheme("night");
@@ -80,18 +60,8 @@ function readThemeCookie() {
         return raw;
       }
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
   return null;
-}
-
-function formatUsd(value) {
-  return `$${Number(value || 0).toFixed(4)}`;
-}
-
-function formatInt(value) {
-  return Number(value || 0).toLocaleString();
 }
 
 function loadSavedFilters() {
@@ -99,136 +69,44 @@ function loadSavedFilters() {
     const raw = localStorage.getItem("pi-studio-cost-filters");
     if (!raw) return;
     const saved = JSON.parse(raw);
-    if (saved.range) rangeSelect.value = saved.range;
-    if (saved.scope) scopeSelect.value = saved.scope;
-  } catch {
-    // ignore
-  }
+    if (saved.range) currentRange = saved.range;
+    if (saved.scope === "all") {
+      scopeSelect.value = "all";
+    } else if (saved.scope === "current") {
+      scopeSelect.value = "all";
+    }
+  } catch {}
 }
 
 function saveFilters() {
   localStorage.setItem(
     "pi-studio-cost-filters",
     JSON.stringify({
-      range: rangeSelect.value,
+      range: currentRange,
       scope: scopeSelect.value,
     }),
   );
 }
 
+function syncRangeChips() {
+  for (const chip of rangeChips) {
+    const active = chip.dataset.rangeChip === currentRange;
+    chip.classList.toggle("is-active", active);
+    chip.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
 function buildQuery() {
   const params = new URLSearchParams({
-    range: rangeSelect.value,
+    range: currentRange,
     granularity: "day",
     scope: scopeSelect.value,
   });
   return params.toString();
 }
 
-function renderKpis(summary = {}) {
-  kpiTotalCost.textContent = formatUsd(summary.totalCost);
-  kpiTotalTokens.textContent = formatInt(summary.totalTokens);
-  kpiCostSession.textContent = formatUsd(summary.avgCostPerSession);
-  kpiCostMessage.textContent = formatUsd(summary.avgCostPerUserMessage);
-}
-
-function renderTrend(series = []) {
-  if (!Array.isArray(series) || series.length === 0) {
-    trendBarsEl.innerHTML = "";
-    trendEmptyEl.classList.remove("hidden");
-    return;
-  }
-  trendEmptyEl.classList.add("hidden");
-  const max = Math.max(...series.map((s) => Number(s.cost || 0)), 0.0001);
-  trendBarsEl.innerHTML = series
-    .map((s) => {
-      const width = Math.max(2, Math.round((Number(s.cost || 0) / max) * 100));
-      return `
-      <div class="trend-row">
-        <span>${s.bucket}</span>
-        <div class="trend-bar-wrap"><div class="trend-bar" style="width:${width}%"></div></div>
-        <span>${formatUsd(s.cost)}</span>
-      </div>
-    `;
-    })
-    .join("");
-}
-
-function renderBreakdown(target, rows = []) {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    target.innerHTML = '<div class="empty">No data</div>';
-    return;
-  }
-  target.innerHTML = rows
-    .slice(0, 12)
-    .map(
-      (row) => `
-    <div class="breakdown-row">
-      <span>${row.name || "unknown"}</span>
-      <span>${formatUsd(row.cost)}</span>
-    </div>
-  `,
-    )
-    .join("");
-}
-
-function renderSessionsTable(target, sessions = []) {
-  if (!Array.isArray(sessions) || sessions.length === 0) {
-    target.innerHTML = '<div class="empty">No sessions found.</div>';
-    return;
-  }
-  target.innerHTML = `
-    <table class="cost-table">
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Title</th>
-          <th>Workspace</th>
-          <th>Model</th>
-          <th>Total Cost</th>
-          <th>Tokens</th>
-          <th>Tool Calls</th>
-          <th>Cost / Msg</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${sessions
-          .map(
-            (s) => `
-          <tr>
-            <td>${new Date(s.time).toLocaleString()}</td>
-            <td>${escapeHtml(s.title || "Untitled")}</td>
-            <td>${escapeHtml(s.workspace || "")}</td>
-            <td>${escapeHtml(s.model || "unknown")}</td>
-            <td>${formatUsd(s.totalCost)}</td>
-            <td>${formatInt(s.totalTokens)}</td>
-            <td>${formatInt(s.toolCalls)}</td>
-            <td>${formatUsd(s.costPerUserMessage)}</td>
-          </tr>
-        `,
-          )
-          .join("")}
-      </tbody>
-    </table>
-  `;
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
 function renderAll(payload) {
-  _currentPayload = payload;
-  renderKpis(payload.summary || {});
-  renderTrend(payload.series || []);
-  renderBreakdown(modelBreakdownEl, payload.breakdown?.byModel || []);
-  renderBreakdown(toolBreakdownEl, payload.breakdown?.byTool || []);
-  renderSessionsTable(allSessionsEl, payload.sessions || []);
+  renderCostInfobar(infobarSectionEl, payload);
 }
 
 async function loadDashboard() {
@@ -240,21 +118,20 @@ async function loadDashboard() {
   renderAll(payload);
 }
 
-applyFiltersBtn.addEventListener("click", () => {
-  loadDashboard().catch((error) => {
-    console.error("[Cost] Failed to load dashboard:", error);
+for (const chip of rangeChips) {
+  chip.addEventListener("click", () => {
+    const nextRange = chip.dataset.rangeChip;
+    if (!nextRange) return;
+    currentRange = nextRange;
+    syncRangeChips();
+    loadDashboard().catch((error) => {
+      console.error("[Cost] Failed to load dashboard:", error);
+    });
   });
-});
-
-resetFiltersBtn.addEventListener("click", () => {
-  rangeSelect.value = "30d";
-  scopeSelect.value = "current";
-  loadDashboard().catch((error) => {
-    console.error("[Cost] Failed to reset dashboard:", error);
-  });
-});
+}
 
 loadSavedFilters();
+syncRangeChips();
 loadDashboard().catch((error) => {
   console.error("[Cost] Initial load failed:", error);
 });

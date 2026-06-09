@@ -2733,7 +2733,7 @@ function renderBrowsePagination(totalPages) {
   const addBtn = (label, page, { active = false, disabled = false } = {}) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "pkg-browse-page-btn" + (active ? " is-active" : "");
+    btn.className = `pkg-browse-page-btn${active ? " is-active" : ""}`;
     btn.textContent = label;
     btn.disabled = disabled;
     if (!disabled && !active) btn.addEventListener("click", () => goTo(page));
@@ -3122,11 +3122,6 @@ sidebar.loadSessions().then(() => {
   }
   if (isMirrorMode) updateMirrorLiveIndicator();
 });
-
-// Register service worker for PWA
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
-}
 
 // Dismiss mobile splash screen
 const splash = document.getElementById("mobile-splash");

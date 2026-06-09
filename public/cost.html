@@ -3,69 +3,87 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pi Studio - Cost Dashboard</title>
+  <title>Pi Studio - Usage</title>
   <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg">
   <link rel="stylesheet" href="style-theme.css">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="cost.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <div class="cost-page">
-    <section class="cost-filters">
-      <label>
-        <span>Scope</span>
-        <select id="scope-select">
-          <option value="current">Current Project</option>
-          <option value="all">All Projects</option>
-        </select>
-      </label>
-
-      <label>
-        <span>Range</span>
-        <select id="range-select">
-          <option value="7d">Last 7 days</option>
-          <option value="30d" selected>Last 30 days</option>
-          <option value="90d">Last 90 days</option>
-        </select>
-      </label>
-
-      <div class="filter-actions">
-        <button id="apply-filters-btn">Apply</button>
-        <button id="reset-filters-btn" class="ghost">Reset</button>
+  <div class="cost-page cost-page-infobar">
+    <section class="" id="infobar-cost-section">
+      <div class="infobar-topbar">
+        <div class="infobar-topbar-actions">
+          <select id="scope-select" class="infobar-hidden-control" aria-hidden="true" tabindex="-1">
+            <option value="all" selected>All Projects</option>
+          </select>
+          <div class="infobar-quick-range" role="group" aria-label="Quick range">
+            <button type="button" class="infobar-range-chip" data-range-chip="7d">7d</button>
+            <button type="button" class="infobar-range-chip is-active" data-range-chip="30d">30d</button>
+            <button type="button" class="infobar-range-chip" data-range-chip="90d">90d</button>
+          </div>
+          <span class="infobar-range-meta" id="infobar-range-meta">No data</span>
+        </div>
       </div>
-    </section>
 
-    <section class="kpi-grid" id="kpi-grid">
-      <article class="kpi-card"><h3>Total Cost</h3><p id="kpi-total-cost">$0.00</p></article>
-      <article class="kpi-card"><h3>Total Tokens</h3><p id="kpi-total-tokens">0</p></article>
-      <article class="kpi-card"><h3>Avg Cost / Session</h3><p id="kpi-cost-session">$0.00</p></article>
-      <article class="kpi-card"><h3>Avg Cost / Message</h3><p id="kpi-cost-message">$0.00</p></article>
-    </section>
+      <div class="infobar-panels">
+        <div class="infobar-panel is-active" id="usage-overview">
+          <div class="infobar-cost-block">
+            <div class="infobar-subsection-head">
+              <h3>Overview</h3>
+              <span>Activity, usage, and core stats</span>
+            </div>
+            <div class="infobar-overview-grid" id="infobar-overview-grid"></div>
+            <div class="infobar-activity-wrap">
+              <div id="infobar-activity-panel"></div>
+            </div>
+            <p class="infobar-overview-note" id="infobar-overview-note"></p>
+          </div>
+        </div>
 
-    <section class="panel">
-      <div class="panel-header">
-        <h2>Cost Trend</h2>
-      </div>
-      <div id="trend-empty" class="empty hidden">No data in selected range.</div>
-      <div id="trend-bars" class="trend-bars"></div>
-    </section>
+        <div class="infobar-section-row">
+          <div class="infobar-panel is-active" id="usage-models">
+            <div class="infobar-cost-block">
+              <div class="infobar-subsection-head">
+                <h3>Models</h3>
+                <span>By cost</span>
+              </div>
+              <div class="infobar-rank-list" id="infobar-models-list"></div>
+            </div>
+          </div>
 
-    <section class="panel split">
-      <div>
-        <h2>By Model</h2>
-        <div id="model-breakdown" class="breakdown-list"></div>
-      </div>
-      <div>
-        <h2>By Tool (Estimated)</h2>
-        <div id="tool-breakdown" class="breakdown-list"></div>
-      </div>
-    </section>
+          <div class="infobar-panel is-active" id="usage-tool-cost">
+            <div class="infobar-cost-block">
+              <div class="infobar-subsection-head">
+                <h3>Tool Cost</h3>
+                <span id="infobar-tool-cost-meta">0 tracked</span>
+              </div>
+              <div id="infobar-tool-cost-panel"></div>
+            </div>
+          </div>
+        </div>
 
-    <section class="panel">
-      <div class="panel-header">
-        <h2>All Sessions</h2>
+        <div class="infobar-panel is-active" id="usage-projects">
+          <div class="infobar-cost-block">
+            <div class="infobar-subsection-head">
+              <h3>Projects</h3>
+              <span>By cost</span>
+            </div>
+            <div class="infobar-rank-list" id="infobar-projects-list"></div>
+          </div>
+        </div>
+
+        <div class="infobar-panel is-active" id="usage-sessions">
+          <div class="infobar-cost-block">
+            <div class="infobar-subsection-head">
+              <h3>Sessions</h3>
+              <span>Recent sessions in range</span>
+            </div>
+            <div id="infobar-sessions-panel"></div>
+          </div>
+        </div>
       </div>
-      <div id="all-sessions" class="table-wrap"></div>
     </section>
   </div>
   <script type="module" src="cost.js"></script>
