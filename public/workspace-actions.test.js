@@ -6,7 +6,7 @@ import {
   withBrokerWs,
 } from "./workspace-actions.js";
 
-function makeTauri(newPort = 47826, brokerWsUrl) {
+function makeTransport(newPort = 47826, brokerWsUrl) {
   return {
     newSession: vi.fn().mockResolvedValue(undefined),
     openWorkspace: vi.fn().mockResolvedValue(newPort),
@@ -16,13 +16,13 @@ function makeTauri(newPort = 47826, brokerWsUrl) {
 
 describe("startInWindowNewSession parallel-spawn", () => {
   it("waits for health and dismisses the overlay when activating in-place", async () => {
-    const tauriNative = makeTauri();
+    const transport = makeTransport();
     const dismiss = vi.fn();
     const onBeforeSwap = vi.fn(() => dismiss);
     const onParallelSessionCreated = vi.fn().mockResolvedValue(undefined);
 
     const ok = await startInWindowNewSession({
-      tauriNative,
+      transport,
       getCurrentCwd: () => "/work",
       getCurrentPort: () => 47820,
       navigate: vi.fn(),
@@ -33,7 +33,7 @@ describe("startInWindowNewSession parallel-spawn", () => {
     });
 
     expect(ok).toBe(true);
-    expect(tauriNative.openWorkspace).toHaveBeenCalledWith(
+    expect(transport.openWorkspace).toHaveBeenCalledWith(
       "/work",
       expect.objectContaining({ waitForHealth: true, openWindow: false }),
     );
@@ -42,13 +42,13 @@ describe("startInWindowNewSession parallel-spawn", () => {
   });
 
   it("dismisses the overlay and surfaces an error if activation throws", async () => {
-    const tauriNative = makeTauri();
+    const transport = makeTransport();
     const dismiss = vi.fn();
     const renderError = vi.fn();
     const onParallelSessionCreated = vi.fn().mockRejectedValue(new Error("boom"));
 
     const ok = await startInWindowNewSession({
-      tauriNative,
+      transport,
       getCurrentCwd: () => "/work",
       getCurrentPort: () => 47820,
       navigate: vi.fn(),
@@ -64,11 +64,11 @@ describe("startInWindowNewSession parallel-spawn", () => {
   });
 
   it("uses in-place new_session when not streaming (no overlay)", async () => {
-    const tauriNative = makeTauri();
+    const transport = makeTransport();
     const onInPlaceSessionCreated = vi.fn();
 
     const ok = await startInWindowNewSession({
-      tauriNative,
+      transport,
       getCurrentCwd: () => "/work",
       getCurrentPort: () => 47820,
       navigate: vi.fn(),
@@ -79,8 +79,8 @@ describe("startInWindowNewSession parallel-spawn", () => {
     });
 
     expect(ok).toBe(true);
-    expect(tauriNative.newSession).toHaveBeenCalledWith(47820);
-    expect(tauriNative.openWorkspace).not.toHaveBeenCalled();
+    expect(transport.newSession).toHaveBeenCalledWith(47820);
+    expect(transport.openWorkspace).not.toHaveBeenCalled();
     expect(onInPlaceSessionCreated).toHaveBeenCalled();
   });
 });
@@ -100,14 +100,14 @@ describe("isDeadPortError", () => {
 
 describe("in-place dead-port recovery", () => {
   it("startInWindowNewSession spawns a fresh process when the port is dead", async () => {
-    const tauriNative = makeTauri();
-    tauriNative.newSession = vi.fn().mockRejectedValue(new Error("No pi instance on port 47823"));
+    const transport = makeTransport();
+    transport.newSession = vi.fn().mockRejectedValue(new Error("No pi instance on port 47823"));
     const onParallelSessionCreated = vi.fn().mockResolvedValue(undefined);
     const onInPlaceSessionCreated = vi.fn();
     const renderError = vi.fn();
 
     const ok = await startInWindowNewSession({
-      tauriNative,
+      transport,
       getCurrentCwd: () => "/work",
       getCurrentPort: () => 47823,
       navigate: vi.fn(),
@@ -119,8 +119,8 @@ describe("in-place dead-port recovery", () => {
     });
 
     expect(ok).toBe(true);
-    expect(tauriNative.newSession).toHaveBeenCalledWith(47823);
-    expect(tauriNative.openWorkspace).toHaveBeenCalledWith(
+    expect(transport.newSession).toHaveBeenCalledWith(47823);
+    expect(transport.openWorkspace).toHaveBeenCalledWith(
       "/work",
       expect.objectContaining({ openWindow: false }),
     );
@@ -130,12 +130,12 @@ describe("in-place dead-port recovery", () => {
   });
 
   it("startInWindowNewSession surfaces non-dead-port errors without spawning", async () => {
-    const tauriNative = makeTauri();
-    tauriNative.newSession = vi.fn().mockRejectedValue(new Error("kaboom"));
+    const transport = makeTransport();
+    transport.newSession = vi.fn().mockRejectedValue(new Error("kaboom"));
     const renderError = vi.fn();
 
     const ok = await startInWindowNewSession({
-      tauriNative,
+      transport,
       getCurrentCwd: () => "/work",
       getCurrentPort: () => 47823,
       navigate: vi.fn(),
@@ -146,19 +146,19 @@ describe("in-place dead-port recovery", () => {
     });
 
     expect(ok).toBe(false);
-    expect(tauriNative.openWorkspace).not.toHaveBeenCalled();
+    expect(transport.openWorkspace).not.toHaveBeenCalled();
     expect(renderError).toHaveBeenCalled();
   });
 
   it("startNewProjectChat spawns a fresh process when the port is dead", async () => {
-    const tauriNative = makeTauri();
-    tauriNative.newSession = vi.fn().mockRejectedValue(new Error("No pi instance on port 47823"));
+    const transport = makeTransport();
+    transport.newSession = vi.fn().mockRejectedValue(new Error("No pi instance on port 47823"));
     const onParallelSessionCreated = vi.fn().mockResolvedValue(undefined);
     const renderError = vi.fn();
 
     const ok = await startNewProjectChat({
       project: { path: "/work", sessions: [{ cwd: "/work" }] },
-      tauriNative,
+      transport,
       getCurrentPort: () => 47823,
       getCurrentCwd: () => "/work",
       shouldSpawnParallel: () => false,
@@ -177,15 +177,15 @@ describe("in-place dead-port recovery", () => {
 
 describe("withBrokerWs", () => {
   it("appends the broker WS url as an encoded query param", () => {
-    const tauriNative = { brokerWsUrl: () => "ws://127.0.0.1:47999/broker" };
-    expect(withBrokerWs("http://localhost:47826/", tauriNative)).toBe(
+    const transport = { brokerWsUrl: () => "ws://127.0.0.1:47999/broker" };
+    expect(withBrokerWs("http://localhost:47826/", transport)).toBe(
       "http://localhost:47826/?brokerWs=ws%3A%2F%2F127.0.0.1%3A47999%2Fbroker",
     );
   });
 
   it("uses & when the url already has a query string", () => {
-    const tauriNative = { brokerWsUrl: () => "ws://x/b" };
-    expect(withBrokerWs("http://localhost:47826/?foo=1", tauriNative)).toBe(
+    const transport = { brokerWsUrl: () => "ws://x/b" };
+    expect(withBrokerWs("http://localhost:47826/?foo=1", transport)).toBe(
       "http://localhost:47826/?foo=1&brokerWs=ws%3A%2F%2Fx%2Fb",
     );
   });
@@ -199,22 +199,22 @@ describe("withBrokerWs", () => {
   });
 
   it("survives a throwing brokerWsUrl", () => {
-    const tauriNative = {
+    const transport = {
       brokerWsUrl: () => {
         throw new Error("nope");
       },
     };
-    expect(withBrokerWs("http://localhost:47826/", tauriNative)).toBe("http://localhost:47826/");
+    expect(withBrokerWs("http://localhost:47826/", transport)).toBe("http://localhost:47826/");
   });
 });
 
 describe("navigation propagates the broker WS url", () => {
   it("startInWindowNewSession appends brokerWs on full-page navigation", async () => {
-    const tauriNative = makeTauri(47826, "ws://127.0.0.1:47999/broker");
+    const transport = makeTransport(47826, "ws://127.0.0.1:47999/broker");
     const navigate = vi.fn();
 
     const ok = await startInWindowNewSession({
-      tauriNative,
+      transport,
       getCurrentCwd: () => "/work",
       getCurrentPort: () => 47820,
       navigate,
@@ -230,12 +230,12 @@ describe("navigation propagates the broker WS url", () => {
   });
 
   it("startNewProjectChat appends brokerWs on full-page navigation", async () => {
-    const tauriNative = makeTauri(47826, "ws://127.0.0.1:47999/broker");
+    const transport = makeTransport(47826, "ws://127.0.0.1:47999/broker");
     const navigate = vi.fn();
 
     const ok = await startNewProjectChat({
       project: { path: "/work", sessions: [{ cwd: "/work" }] },
-      tauriNative,
+      transport,
       getCurrentPort: () => 47820,
       getCurrentCwd: () => "/other",
       shouldSpawnParallel: () => true,
@@ -254,13 +254,13 @@ describe("navigation propagates the broker WS url", () => {
 
 describe("startNewProjectChat parallel-spawn", () => {
   it("waits for health and dismisses overlay on in-place activation", async () => {
-    const tauriNative = makeTauri();
+    const transport = makeTransport();
     const dismiss = vi.fn();
     const onParallelSessionCreated = vi.fn().mockResolvedValue(undefined);
 
     const ok = await startNewProjectChat({
       project: { path: "/work", sessions: [{ cwd: "/work" }] },
-      tauriNative,
+      transport,
       getCurrentPort: () => 47820,
       getCurrentCwd: () => "/work",
       shouldSpawnParallel: () => true,
@@ -272,7 +272,7 @@ describe("startNewProjectChat parallel-spawn", () => {
     });
 
     expect(ok).toBe(true);
-    expect(tauriNative.openWorkspace).toHaveBeenCalledWith(
+    expect(transport.openWorkspace).toHaveBeenCalledWith(
       "/work",
       expect.objectContaining({ waitForHealth: true }),
     );

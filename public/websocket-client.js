@@ -2,10 +2,33 @@
  * WebSocket Client - Handles connection to backend WebSocket server
  */
 
+const BROKER_WS_STORAGE_KEY = "pi-studio:broker-ws-url";
+
+// The shared broker URL is delivered to each page via the `?brokerWs=` query
+// param (the Rust host appends it when opening a window, and in-app navigations
+// carry it forward — see workspace-actions.withBrokerWs). We persist it to
+// sessionStorage so a reload without the param still finds it. Keeping this in
+// the transport-agnostic WS layer means the frontend does not depend on any
+// desktop-specific bridge to discover the broker.
+export function resolveBrokerWsUrl(env = globalThis.window || globalThis) {
+  try {
+    const loc = env?.location || globalThis.location;
+    const search = loc?.search || "";
+    const fromUrl = new URLSearchParams(search).get("brokerWs");
+    if (fromUrl) {
+      env?.sessionStorage?.setItem?.(BROKER_WS_STORAGE_KEY, fromUrl);
+      return fromUrl;
+    }
+    return env?.sessionStorage?.getItem?.(BROKER_WS_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
 export function resolveWebSocketUrl(env = globalThis.window || globalThis) {
-  const tauriBrokerUrl = env?.tauriNative?.brokerWsUrl?.();
-  if (typeof tauriBrokerUrl === "string" && tauriBrokerUrl.trim()) {
-    return tauriBrokerUrl.trim();
+  const brokerUrl = resolveBrokerWsUrl(env);
+  if (brokerUrl.trim()) {
+    return brokerUrl.trim();
   }
 
   const loc = env?.location || globalThis.location;
@@ -30,6 +53,15 @@ export class WebSocketClient extends EventTarget {
     this.sessionId = null;
     this.sourcePort = null;
     this.requestCounter = 0;
+    // Whether the broker advertised native (OS/window) capabilities. Updated by
+    // the `capabilities` handshake frame; consumers gate native-only UI on it.
+    this.capabilities = { native: false };
+    // Pending control requests keyed by requestId. Each entry resolves/rejects
+    // the promise returned by sendControl() when a matching control_response
+    // arrives (or on timeout / disconnect). `onProgress` receives streamed
+    // control_progress frames (e.g. updater download chunks).
+    this.pendingControls = new Map();
+    this.controlTimeoutMs = 30000;
   }
 
   setRoutingContext({ workspaceId, sessionId, sourcePort }) {
@@ -93,6 +125,8 @@ export class WebSocketClient extends EventTarget {
       console.log(`[WS] Disconnected (code=${event.code}, reason=${event.reason || "n/a"})`);
       this.connectionState = "closed";
       this.dispatchEvent(new CustomEvent("disconnected"));
+
+      this.rejectAllControls(new Error("WebSocket disconnected"));
 
       if (!this.isIntentionallyClosed) {
         this.attemptReconnect();
@@ -181,6 +215,111 @@ export class WebSocketClient extends EventTarget {
     }
   }
 
+  // Resolve once the socket is OPEN, or reject after `timeoutMs`. Lets control
+  // commands sent during startup wait briefly for the broker connection instead
+  // of failing the race between page load and the WS handshake.
+  waitForOpen(timeoutMs = 5000) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.removeEventListener("connected", onConnected);
+        reject(new Error("WebSocket not connected"));
+      }, timeoutMs);
+      const onConnected = () => {
+        clearTimeout(timer);
+        this.removeEventListener("connected", onConnected);
+        resolve();
+      };
+      this.addEventListener("connected", onConnected);
+    });
+  }
+
+  // Send a control command (process/window lifecycle or native op handled by
+  // the broker host, not forwarded to a pi upstream) and resolve with the
+  // broker's result. Mirrors the promise semantics of a Tauri `invoke()` so
+  // callers can stay transport-agnostic. `onProgress` (optional) receives
+  // streamed control_progress frames; `timeoutMs` overrides the default for
+  // long/interactive ops (folder picker, updater download).
+  //
+  // When already connected we register + send synchronously (snappy + makes the
+  // requestId correlation deterministic). When not yet connected we wait briefly
+  // for the broker handshake to win the page-load race before sending.
+  sendControl(command, args = {}, options = {}) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return this._sendControlNow(command, args, options);
+    }
+    return this.waitForOpen().then(() => this._sendControlNow(command, args, options));
+  }
+
+  _sendControlNow(command, args = {}, { onProgress = null, timeoutMs } = {}) {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("WebSocket not connected; cannot send control command"));
+        return;
+      }
+      const requestId = `ctl-${++this.requestCounter}`;
+      const entry = { resolve, reject, onProgress, timer: null };
+      const effectiveTimeout = typeof timeoutMs === "number" ? timeoutMs : this.controlTimeoutMs;
+      if (effectiveTimeout > 0) {
+        entry.timer = setTimeout(() => {
+          if (this.pendingControls.has(requestId)) {
+            this.pendingControls.delete(requestId);
+            reject(new Error(`Control command "${command}" timed out`));
+          }
+        }, effectiveTimeout);
+      }
+      this.pendingControls.set(requestId, entry);
+
+      const envelope = {
+        type: "broker_control",
+        protocolVersion: this.protocolVersion,
+        requestId,
+        command,
+        args: args || {},
+      };
+      try {
+        this.ws.send(JSON.stringify(envelope));
+      } catch (err) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pendingControls.delete(requestId);
+        reject(err);
+      }
+    });
+  }
+
+  resolveControl(message) {
+    const requestId = message?.requestId;
+    if (!requestId) return;
+    const pending = this.pendingControls.get(requestId);
+    if (!pending) return;
+    this.pendingControls.delete(requestId);
+    if (pending.timer) clearTimeout(pending.timer);
+    if (message.ok === false) {
+      pending.reject(new Error(message.error || "Control command failed"));
+    } else {
+      pending.resolve(message.result);
+    }
+  }
+
+  handleControlProgress(message) {
+    const pending = this.pendingControls.get(message?.requestId);
+    if (pending && typeof pending.onProgress === "function") {
+      try {
+        pending.onProgress(message.data);
+      } catch (err) {
+        console.error("[WS] control progress handler failed:", err);
+      }
+    }
+  }
+
+  rejectAllControls(error) {
+    for (const [, pending] of this.pendingControls) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pendingControls.clear();
+  }
+
   handleMessage(message, route = null) {
     if (message.type === "broker_event") {
       const payload = message.payload || {};
@@ -203,6 +342,28 @@ export class WebSocketClient extends EventTarget {
       });
       this.dispatchEvent(new CustomEvent("brokerEvent", { detail: message }));
       this.handleMessage(payload, eventRoute);
+      return;
+    }
+
+    // Broker reply for a broker_control we sent (requestId-keyed).
+    if (message.type === "control_response") {
+      this.resolveControl(message);
+      this.dispatchEvent(new CustomEvent("controlResponse", { detail: message }));
+      return;
+    }
+
+    // Streamed progress for an in-flight broker_control (e.g. updater download).
+    if (message.type === "control_progress") {
+      this.handleControlProgress(message);
+      return;
+    }
+
+    // Broker capability handshake — tells the UI whether native (OS/window)
+    // operations are available (true inside the desktop host, false for a bare
+    // broker / remote / mobile client without a control handler).
+    if (message.type === "capabilities") {
+      this.capabilities = { native: Boolean(message.native) };
+      this.dispatchEvent(new CustomEvent("capabilities", { detail: this.capabilities }));
       return;
     }
 

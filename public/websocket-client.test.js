@@ -1,25 +1,150 @@
 import { describe, expect, test } from "vitest";
 import { resolveWebSocketUrl, WebSocketClient } from "./websocket-client.js";
 
+function fakeSessionStorage() {
+  const store = {};
+  return {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => {
+      store[k] = String(v);
+    },
+  };
+}
+
 describe("resolveWebSocketUrl", () => {
-  test("uses the Tauri broker URL when available", () => {
+  test("uses the broker URL from the ?brokerWs= query param", () => {
     const brokerUrl = "ws://127.0.0.1:49000/ui-ws";
 
     expect(
       resolveWebSocketUrl({
-        location: { protocol: "http:", host: "127.0.0.1:47821" },
-        tauriNative: { brokerWsUrl: () => brokerUrl },
+        location: {
+          protocol: "http:",
+          host: "127.0.0.1:47821",
+          search: `?brokerWs=${encodeURIComponent(brokerUrl)}`,
+        },
+        sessionStorage: fakeSessionStorage(),
       }),
     ).toBe(brokerUrl);
   });
 
-  test("falls back to the page-local pi websocket outside Tauri broker mode", () => {
+  test("recovers the broker URL from sessionStorage on a param-less reload", () => {
+    const brokerUrl = "ws://127.0.0.1:49000/ui-ws";
+    const sessionStorage = fakeSessionStorage();
+    // First load carries the param and persists it.
+    resolveWebSocketUrl({
+      location: { protocol: "http:", host: "127.0.0.1:47821", search: `?brokerWs=${brokerUrl}` },
+      sessionStorage,
+    });
+    // Reload without the param still resolves to the broker.
     expect(
       resolveWebSocketUrl({
-        location: { protocol: "https:", host: "studio.local" },
-        tauriNative: null,
+        location: { protocol: "http:", host: "127.0.0.1:47821", search: "" },
+        sessionStorage,
+      }),
+    ).toBe(brokerUrl);
+  });
+
+  test("falls back to the page-local pi websocket when no broker URL is present", () => {
+    expect(
+      resolveWebSocketUrl({
+        location: { protocol: "https:", host: "studio.local", search: "" },
+        sessionStorage: fakeSessionStorage(),
       }),
     ).toBe("wss://studio.local/ws");
+  });
+});
+
+describe("WebSocketClient control commands", () => {
+  function openClient() {
+    const sent = [];
+    const client = new WebSocketClient("ws://broker/ui-ws");
+    client.ws = {
+      readyState: WebSocket.OPEN,
+      send: (message) => sent.push(JSON.parse(message)),
+    };
+    return { client, sent };
+  }
+
+  test("sendControl emits a broker_control envelope and resolves on control_response", async () => {
+    const { client, sent } = openClient();
+    const result = client.sendControl("get_pi_version", {});
+
+    expect(sent[0]).toMatchObject({
+      type: "broker_control",
+      command: "get_pi_version",
+      requestId: "ctl-1",
+    });
+
+    client.handleMessage({
+      type: "control_response",
+      requestId: "ctl-1",
+      ok: true,
+      result: "1.2.3",
+    });
+    await expect(result).resolves.toBe("1.2.3");
+  });
+
+  test("sendControl rejects on an error control_response", async () => {
+    const { client } = openClient();
+    const result = client.sendControl("new_session", {});
+    client.handleMessage({
+      type: "control_response",
+      requestId: "ctl-1",
+      ok: false,
+      error: "boom",
+    });
+    await expect(result).rejects.toThrow("boom");
+  });
+
+  test("control_progress frames invoke the onProgress callback", async () => {
+    const { client } = openClient();
+    const events = [];
+    const result = client.sendControl(
+      "download_and_install_update",
+      {},
+      { onProgress: (data) => events.push(data), timeoutMs: 0 },
+    );
+
+    client.handleMessage({
+      type: "control_progress",
+      requestId: "ctl-1",
+      data: { phase: "started", contentLength: 100 },
+    });
+    client.handleMessage({
+      type: "control_progress",
+      requestId: "ctl-1",
+      data: { phase: "progress", downloaded: 50, contentLength: 100 },
+    });
+    client.handleMessage({
+      type: "control_response",
+      requestId: "ctl-1",
+      ok: true,
+      result: { installed: true },
+    });
+
+    await expect(result).resolves.toEqual({ installed: true });
+    expect(events).toEqual([
+      { phase: "started", contentLength: 100 },
+      { phase: "progress", downloaded: 50, contentLength: 100 },
+    ]);
+  });
+
+  test("the capabilities handshake updates client.capabilities and emits an event", () => {
+    const client = new WebSocketClient("ws://broker/ui-ws");
+    const seen = [];
+    client.addEventListener("capabilities", (event) => seen.push(event.detail));
+
+    client.handleMessage({ type: "capabilities", native: true });
+
+    expect(client.capabilities).toEqual({ native: true });
+    expect(seen).toEqual([{ native: true }]);
+  });
+
+  test("disconnecting rejects pending control requests", async () => {
+    const { client } = openClient();
+    const result = client.sendControl("get_pi_version", {});
+    client.rejectAllControls(new Error("WebSocket disconnected"));
+    await expect(result).rejects.toThrow("WebSocket disconnected");
   });
 });
 

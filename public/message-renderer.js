@@ -20,6 +20,10 @@ export class MessageRenderer {
 
   clear() {
     this.container.innerHTML = "";
+    // Session switches reuse the same renderer instance. If the previous session
+    // left the viewport away from bottom, keep new renders from inheriting that
+    // stale anchor state (which can suppress auto-scroll until the user scrolls).
+    this.isNearBottom = true;
   }
 
   renderWelcome({ workspacePath } = {}) {

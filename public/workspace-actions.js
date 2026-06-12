@@ -36,10 +36,10 @@
 // The new page then silently falls back to its own per-instance /ws,
 // bypassing the broker multiplexer. Mirrors the Rust windowed path
 // (open_workspace_window) which already appends ?brokerWs=.
-export function withBrokerWs(url, tauriNative) {
+export function withBrokerWs(url, transport) {
   let brokerUrl = "";
   try {
-    brokerUrl = tauriNative?.brokerWsUrl?.() || "";
+    brokerUrl = transport?.brokerWsUrl?.() || "";
   } catch {
     brokerUrl = "";
   }
@@ -73,7 +73,7 @@ function runOnBeforeSwap(onBeforeSwap, label) {
 // windowless pi and navigates the *current* window to it.
 async function attachToWorkspace({
   targetCwd,
-  tauriNative,
+  transport,
   fetchInstances,
   getCurrentPort,
   navigate,
@@ -94,7 +94,7 @@ async function attachToWorkspace({
   const dismissOverlay = runOnBeforeSwap(onBeforeSwap, "Opening workspace…");
   if (!targetPort) {
     try {
-      targetPort = await tauriNative.openWorkspace(targetCwd, {
+      targetPort = await transport.openWorkspace(targetCwd, {
         forceNewSession: false,
         openWindow: false,
         waitForSessions: false,
@@ -106,7 +106,7 @@ async function attachToWorkspace({
     }
   }
 
-  navigate(withBrokerWs(`http://localhost:${targetPort}/`, tauriNative));
+  navigate(withBrokerWs(`http://localhost:${targetPort}/`, transport));
   return { samePort: false, port: targetPort };
 }
 
@@ -116,7 +116,7 @@ async function attachToWorkspace({
 // the background — it's not killed, just no longer attached to this
 // window. The user can return to it via the running-instances list.
 export async function startInWindowNewSession({
-  tauriNative,
+  transport,
   getCurrentCwd,
   getCurrentPort,
   fetchInstances,
@@ -127,8 +127,8 @@ export async function startInWindowNewSession({
   onParallelSessionCreated,
   renderError,
 }) {
-  if (!tauriNative) {
-    renderError("New session is only supported in Tauri mode.");
+  if (!transport) {
+    renderError("New session is only supported with a native host.");
     return false;
   }
 
@@ -172,7 +172,7 @@ export async function startInWindowNewSession({
   });
   if (!wantsParallel && typeof currentPort === "number" && Number.isFinite(currentPort)) {
     try {
-      await tauriNative.newSession(currentPort);
+      await transport.newSession(currentPort);
       if (typeof onInPlaceSessionCreated === "function") {
         onInPlaceSessionCreated();
       }
@@ -193,7 +193,7 @@ export async function startInWindowNewSession({
 
   return spawnFreshSession({
     targetCwd,
-    tauriNative,
+    transport,
     navigate,
     onBeforeSwap,
     onParallelSessionCreated,
@@ -209,7 +209,7 @@ export async function startInWindowNewSession({
 // fallback) and the project-tile "start new chat" flow.
 async function spawnFreshSession({
   targetCwd,
-  tauriNative,
+  transport,
   navigate,
   onBeforeSwap,
   onParallelSessionCreated,
@@ -225,7 +225,7 @@ async function spawnFreshSession({
     // routing to its port — otherwise the broker connects to a not-yet-listening
     // port (Connection refused) and the UI is stuck attached to a dead instance.
     const waitForHealth = typeof onParallelSessionCreated === "function";
-    const newPort = await tauriNative.openWorkspace(targetCwd, {
+    const newPort = await transport.openWorkspace(targetCwd, {
       forceNewSession: false,
       openWindow: false,
       waitForHealth,
@@ -246,7 +246,7 @@ async function spawnFreshSession({
       }
       return true;
     }
-    navigate(withBrokerWs(`http://localhost:${newPort}/`, tauriNative));
+    navigate(withBrokerWs(`http://localhost:${newPort}/`, transport));
     return true;
   } catch (e) {
     dismissOverlay();
@@ -268,7 +268,7 @@ function resolveProjectCwd(project) {
 // Session", just sourced from a project tile instead of the header.
 export async function startNewProjectChat({
   project,
-  tauriNative,
+  transport,
   getCurrentPort,
   getCurrentCwd,
   shouldSpawnParallel,
@@ -279,8 +279,8 @@ export async function startNewProjectChat({
   onBeforeSwap,
   renderError,
 }) {
-  if (!tauriNative) {
-    renderError("Project new chat is only supported in Tauri mode.");
+  if (!transport) {
+    renderError("Project new chat is only supported with a native host.");
     return false;
   }
 
@@ -315,7 +315,7 @@ export async function startNewProjectChat({
     Number.isFinite(currentPort)
   ) {
     try {
-      await tauriNative.newSession(currentPort);
+      await transport.newSession(currentPort);
       if (typeof onInPlaceSessionCreated === "function") {
         onInPlaceSessionCreated();
       }
@@ -333,7 +333,7 @@ export async function startNewProjectChat({
       });
       return spawnFreshSession({
         targetCwd,
-        tauriNative,
+        transport,
         navigate,
         onBeforeSwap,
         onParallelSessionCreated,
@@ -348,7 +348,7 @@ export async function startNewProjectChat({
   if (!wantsParallel) {
     const result = await attachToWorkspace({
       targetCwd,
-      tauriNative,
+      transport,
       fetchInstances,
       getCurrentPort,
       navigate,
@@ -360,7 +360,7 @@ export async function startNewProjectChat({
 
   return spawnFreshSession({
     targetCwd,
-    tauriNative,
+    transport,
     navigate,
     onBeforeSwap,
     onParallelSessionCreated,
@@ -377,15 +377,15 @@ export async function startNewProjectChat({
 // Session" inside the workspace window to fork a parallel agent.
 export async function openProjectWorkspace({
   project,
-  tauriNative,
+  transport,
   fetchInstances,
   getCurrentPort,
   navigate,
   onBeforeSwap,
   renderError,
 }) {
-  if (!tauriNative) {
-    renderError("Open project is only supported in Tauri mode.");
+  if (!transport) {
+    renderError("Open project is only supported with a native host.");
     return false;
   }
 
@@ -398,7 +398,7 @@ export async function openProjectWorkspace({
   try {
     const result = await attachToWorkspace({
       targetCwd,
-      tauriNative,
+      transport,
       fetchInstances,
       getCurrentPort,
       navigate,
@@ -413,25 +413,25 @@ export async function openProjectWorkspace({
 }
 
 export async function openFolderAsWorkspace({
-  tauriNative,
+  transport,
   fetchInstances,
   getCurrentPort,
   navigate,
   onBeforeSwap,
   renderError,
 }) {
-  if (!tauriNative) {
-    renderError("Open folder is only supported in Tauri mode.");
+  if (!transport) {
+    renderError("Open folder is only supported with a native host.");
     return false;
   }
 
   try {
-    const selectedPath = await tauriNative.pickFolder();
+    const selectedPath = await transport.pickFolder();
     if (!selectedPath) return false;
 
     const result = await attachToWorkspace({
       targetCwd: selectedPath,
-      tauriNative,
+      transport,
       fetchInstances,
       getCurrentPort,
       navigate,

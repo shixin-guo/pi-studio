@@ -1208,20 +1208,15 @@ export default function (pi: ExtensionAPI) {
           if (sessionEntry?.cwd) cwd = sessionEntry.cwd;
         } catch {}
       }
-      execFile(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd },
-        (err, stdout) => {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          if (err) {
-            res.end(JSON.stringify({ branch: null }));
-            return;
-          }
-          const branch = stdout.toString().trim();
-          res.end(JSON.stringify({ branch: branch || null }));
-        },
-      );
+      execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd }, (err, stdout) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (err) {
+          res.end(JSON.stringify({ branch: null }));
+          return;
+        }
+        const branch = stdout.toString().trim();
+        res.end(JSON.stringify({ branch: branch || null }));
+      });
       return;
     }
 

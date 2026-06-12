@@ -1,102 +1,12 @@
 [[permission]]
-identifier = "allow-cmd-open-workspace"
-description = "Allow spawning a new pi process and opening a workspace window"
-commands.allow = ["cmd_open_workspace"]
-
-[[permission]]
-identifier = "allow-cmd-pick-folder"
-description = "Allow native folder picker dialog"
-commands.allow = ["cmd_pick_folder"]
-
-[[permission]]
-identifier = "allow-cmd-new-session"
-description = "Allow creating a new session via RPC"
-commands.allow = ["cmd_new_session"]
-
-[[permission]]
-identifier = "allow-cmd-switch-session"
-description = "Allow switching to a session file via RPC"
-commands.allow = ["cmd_switch_session"]
-
-[[permission]]
-identifier = "allow-cmd-stop-instance"
-description = "Allow stopping (killing) a pi instance"
-commands.allow = ["cmd_stop_instance"]
-
-[[permission]]
-identifier = "allow-cmd-spawn-session-process"
-description = "Allow spawning a dedicated pi process for a session"
-commands.allow = ["cmd_spawn_session_process"]
-
-[[permission]]
-identifier = "allow-cmd-list-installed-apps"
-description = "Allow listing external apps (editors/terminals) a project can be opened in"
-commands.allow = ["cmd_list_installed_apps"]
-
-[[permission]]
-identifier = "allow-cmd-open-in-app"
-description = "Allow opening a project directory in an external app (editor/terminal/file manager)"
-commands.allow = ["cmd_open_in_app"]
-
-[[permission]]
-identifier = "allow-cmd-get-pi-version"
-description = "Allow reading installed pi CLI version"
-commands.allow = ["cmd_get_pi_version"]
-
-[[permission]]
-identifier = "allow-cmd-get-app-version"
-description = "Allow reading the running Pi Studio app version (used by the auto-updater UI)"
-commands.allow = ["cmd_get_app_version"]
-
-[[permission]]
-identifier = "allow-cmd-is-dev"
-description = "Allow checking whether this is a debug build"
-commands.allow = ["cmd_is_dev"]
-
-[[permission]]
-identifier = "allow-cmd-open-devtools"
-description = "Allow opening the webview devtools inspector for a workspace window"
-commands.allow = ["cmd_open_devtools"]
-
-[[permission]]
 identifier = "allow-cmd-retry-startup"
 description = "Allow retrying startup after a failed embedded pi launch (used by the bootstrap error window)"
 commands.allow = ["cmd_retry_startup"]
-
-[[permission]]
-identifier = "allow-cmd-list-pi-packages"
-description = "Allow listing installed/configured pi packages via embedded pi CLI"
-commands.allow = ["cmd_list_pi_packages"]
-
-[[permission]]
-identifier = "allow-cmd-install-pi-package"
-description = "Allow installing a pi package via embedded pi CLI"
-commands.allow = ["cmd_install_pi_package"]
-
-[[permission]]
-identifier = "allow-cmd-remove-pi-package"
-description = "Allow removing a pi package via embedded pi CLI"
-commands.allow = ["cmd_remove_pi_package"]
 
 # Permission set that bundles all custom command permissions.
 # Referenced from capabilities/default.json as "pi-desktop:default".
 [default]
 description = "Default permissions bundle for Pi Desktop custom commands"
 permissions = [
-  "allow-cmd-open-workspace",
-  "allow-cmd-pick-folder",
-  "allow-cmd-new-session",
-  "allow-cmd-switch-session",
-  "allow-cmd-stop-instance",
-  "allow-cmd-spawn-session-process",
-  "allow-cmd-list-installed-apps",
-  "allow-cmd-open-in-app",
-  "allow-cmd-get-pi-version",
-  "allow-cmd-get-app-version",
-  "allow-cmd-is-dev",
-  "allow-cmd-open-devtools",
   "allow-cmd-retry-startup",
-  "allow-cmd-list-pi-packages",
-  "allow-cmd-install-pi-package",
-  "allow-cmd-remove-pi-package",
 ]

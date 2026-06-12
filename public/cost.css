@@ -24,7 +24,6 @@ body {
 
 .cost-header p {
   margin: 4px 0 0;
-  color: var(--text-secondary);
 }
 
 .back-link {
@@ -58,7 +57,6 @@ body {
 
 .cost-filters span {
   font-size: 12px;
-  color: var(--text-secondary);
 }
 
 .cost-filters select,
@@ -98,15 +96,12 @@ body {
 
 .kpi-card h3 {
   margin: 0;
-  color: var(--text-secondary);
   font-size: 12px;
-  font-weight: 600;
 }
 
 .kpi-card p {
   margin: 8px 0 0;
   font-size: 22px;
-  font-weight: 600;
 }
 
 .panel {
@@ -185,7 +180,6 @@ body {
 }
 
 .empty {
-  color: var(--text-secondary);
   font-size: 13px;
   padding: 8px 0;
 }
@@ -240,9 +234,7 @@ body {
   border: 1px solid transparent;
   border-radius: 10px;
   background: transparent;
-  color: var(--text-secondary);
   font-size: 13px;
-  font-weight: 500;
   line-height: 1;
   padding: 0 12px;
   cursor: pointer;
@@ -267,7 +259,6 @@ body {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
-  color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -327,13 +318,11 @@ body {
 .infobar-subsection-head h4 {
   margin: 0;
   font-size: 13px;
-  font-weight: 600;
   letter-spacing: 0.01em;
 }
 
 .infobar-subsection-head span {
   font-size: 11px;
-  color: var(--text-secondary);
 }
 
 /* ── Overview grid ───────────────────────────────────────────────── */
@@ -385,8 +374,6 @@ body {
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  color: var(--text-secondary);
-  font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.2;
 }
@@ -407,7 +394,6 @@ body {
 .infobar-stat-value {
   margin-top: 8px;
   font-size: 22px;
-  font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1;
 }
@@ -479,7 +465,6 @@ body {
 
 .infobar-overview-note {
   margin: 10px 0 0;
-  color: var(--text-secondary);
   font-size: 12px;
   letter-spacing: -0.01em;
 }
@@ -540,7 +525,6 @@ body {
 
 .infobar-model-legend-name {
   font-size: 14px;
-  font-weight: 600;
 }
 
 .infobar-model-legend-meta,
@@ -548,7 +532,6 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
-  color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -634,14 +617,12 @@ body {
 
 .infobar-tool-legend-title {
   font-size: 12px;
-  font-weight: 600;
   line-height: 1.1;
 }
 
 .infobar-tool-legend-subtitle {
   margin-top: 1px;
   font-size: 10px;
-  color: var(--text-secondary);
 }
 
 .infobar-sessions-table-wrap {
@@ -658,8 +639,6 @@ body {
   padding: 6px 10px;
   text-align: left;
   font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -693,7 +672,6 @@ body {
 }
 
 .infobar-sessions-title {
-  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -711,7 +689,6 @@ body {
 }
 
 .infobar-sessions-td-model {
-  color: var(--text-secondary);
   white-space: nowrap;
   max-width: 140px;
   overflow: hidden;
@@ -719,12 +696,10 @@ body {
 }
 
 .infobar-sessions-cost {
-  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .infobar-sessions-td-date {
-  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -793,7 +768,6 @@ body {
   width: 20px;
   color: var(--text-dim);
   font-size: 12px;
-  font-weight: 700;
   line-height: 1.5;
   text-align: center;
   flex-shrink: 0;
@@ -801,19 +775,16 @@ body {
 
 .infobar-rank-title {
   font-size: 13px;
-  font-weight: 600;
   word-break: break-word;
 }
 
 .infobar-rank-subtitle {
   margin-top: 2px;
   font-size: 11px;
-  color: var(--text-secondary);
 }
 
 .infobar-rank-value {
   font-size: 13px;
-  font-weight: 700;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }

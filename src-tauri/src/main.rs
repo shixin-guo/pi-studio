@@ -24,12 +24,7 @@ type BrokerWsState = Arc<BrokerWs>;
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
 
 /// Create a new session within the current workspace (RPC command to existing pi)
-#[tauri::command]
-fn cmd_new_session(
-    port: u16,
-    manager: State<PiManagerState>,
-    broker: State<BrokerWsState>,
-) -> Result<(), String> {
+fn new_session_core(port: u16, manager: &PiManager, broker: &BrokerWs) -> Result<(), String> {
     let result = manager.send_rpc(port, serde_json::json!({ "type": "new_session" }));
     if result.is_ok() {
         broker.set_active_port(port);
@@ -38,19 +33,18 @@ fn cmd_new_session(
 }
 
 /// Resume (switch to) an existing session file within the current workspace
-#[tauri::command]
-fn cmd_switch_session(
+fn switch_session_core(
     port: u16,
-    session_path: String,
-    manager: State<PiManagerState>,
-    broker: State<BrokerWsState>,
+    session_path: &str,
+    manager: &PiManager,
+    broker: &BrokerWs,
 ) -> Result<(), String> {
     let result = manager.send_rpc(
         port,
-        serde_json::json!({ "type": "switch_session", "sessionPath": session_path.clone() }),
+        serde_json::json!({ "type": "switch_session", "sessionPath": session_path }),
     );
     if result.is_ok() {
-        broker.register_session(port, &session_path);
+        broker.register_session(port, session_path);
     }
     result
 }
@@ -59,23 +53,22 @@ fn cmd_switch_session(
 /// When `open_window` is true (default) a new OS window is opened for the new pi.
 /// When false, the pi process is spawned headlessly and the caller is expected to
 /// navigate the current window to the returned port.
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
-async fn cmd_open_workspace(
-    cwd: String,
-    session_path: Option<String>,
-    force_new_session: Option<bool>,
-    open_window: Option<bool>,
-    wait_for_health: Option<bool>,
-    wait_for_sessions: Option<bool>,
-    manager: State<'_, PiManagerState>,
-    broker: State<'_, BrokerWsState>,
-    app: AppHandle,
+async fn open_workspace_core(
+    cwd: &str,
+    session_path: Option<&str>,
+    force_new_session: bool,
+    open_window: bool,
+    wait_for_health: bool,
+    wait_for_sessions: bool,
+    manager: &PiManager,
+    broker: &BrokerWs,
+    app: Option<&AppHandle>,
 ) -> Result<u16, String> {
     let started_at = Instant::now();
     let port = manager.next_port();
     let spawn_started_at = Instant::now();
-    manager.spawn(&cwd, port, session_path.as_deref())?;
+    manager.spawn(cwd, port, session_path)?;
     log::info!(
         "[pi-desktop] open_workspace spawn complete: port={} cwd={} elapsed_ms={}",
         port,
@@ -83,7 +76,7 @@ async fn cmd_open_workspace(
         spawn_started_at.elapsed().as_millis()
     );
 
-    if wait_for_health.unwrap_or(true) {
+    if wait_for_health {
         // Brief pause then check if the process crashed immediately (fast-fail
         // instead of waiting the full 30-second health timeout).
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -118,8 +111,8 @@ async fn cmd_open_workspace(
     // Registering earlier would start the upstream reconnect loop against a
     // port that may never come up, leaking a 750ms-interval reconnect spinner
     // on any spawn failure path that returns without unregistering.
-    broker.register_session(port, session_path.as_deref().unwrap_or(""));
-    if force_new_session.unwrap_or(false) {
+    broker.register_session(port, session_path.unwrap_or(""));
+    if force_new_session {
         let new_session_started_at = Instant::now();
         manager.send_rpc(port, serde_json::json!({ "type": "new_session" }))?;
         log::info!(
@@ -128,7 +121,7 @@ async fn cmd_open_workspace(
             new_session_started_at.elapsed().as_millis()
         );
     }
-    if wait_for_sessions.unwrap_or(false) {
+    if wait_for_sessions {
         let sessions_started_at = Instant::now();
         match wait_for_endpoint(port, "/api/sessions", 4).await {
             Ok(_) => log::info!(
@@ -143,8 +136,15 @@ async fn cmd_open_workspace(
             ),
         }
     }
-    if open_window.unwrap_or(true) {
-        open_workspace_window(&app, port, &broker.url())?;
+    if open_window {
+        if let Some(app) = app {
+            open_workspace_window(app, port, &broker.url())?;
+        } else {
+            log::warn!(
+                "[pi-desktop] open_workspace requested a window but no AppHandle is available (port {})",
+                port
+            );
+        }
     }
     log::info!(
         "[pi-desktop] open_workspace complete: port={} total_elapsed_ms={}",
@@ -155,8 +155,7 @@ async fn cmd_open_workspace(
 }
 
 /// Stop (kill) a pi instance
-#[tauri::command]
-fn cmd_stop_instance(port: u16, manager: State<PiManagerState>, broker: State<BrokerWsState>) {
+fn stop_instance_core(port: u16, manager: &PiManager, broker: &BrokerWs) {
     manager.kill(port);
     broker.unregister_port(port);
 }
@@ -164,28 +163,25 @@ fn cmd_stop_instance(port: u16, manager: State<PiManagerState>, broker: State<Br
 /// Spawn (or reuse) a dedicated pi process for a specific session file so it
 /// can run concurrently with the workspace's primary process.
 /// Returns the port the dedicated process is listening on.
-#[tauri::command]
-async fn cmd_spawn_session_process(
+async fn spawn_session_process_core(
     workspace_port: u16,
-    session_file: String,
-    cwd: String,
-    manager: State<'_, PiManagerState>,
-    broker: State<'_, BrokerWsState>,
+    session_file: &str,
+    cwd: &str,
+    manager: &PiManager,
+    broker: &BrokerWs,
 ) -> Result<u16, String> {
-    let port =
-        manager.spawn_session_dedicated(workspace_port, session_file.clone(), cwd.as_str())?;
+    let port = manager.spawn_session_dedicated(workspace_port, session_file.to_string(), cwd)?;
     wait_for_pi_health(port, 15).await?;
     // Use track_background_session instead of register_session so the dedicated
     // process is routable by session ID but does NOT become the default
     // active_port — that would silently misroute commands from the session the
     // user is currently viewing.
-    broker.track_background_session(port, &session_file);
+    broker.track_background_session(port, session_file);
     Ok(port)
 }
 
 /// Native folder picker dialog
-#[tauri::command]
-async fn cmd_pick_folder(app: AppHandle) -> Option<String> {
+async fn pick_folder_core(app: &AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_folder(move |path| {
         let result = path.map(|p| match p {
@@ -247,8 +243,7 @@ fn macos_installed_app_names() -> std::collections::HashSet<String> {
 /// List the external apps Pi Studio can open a project in. On macOS this is
 /// filtered down to the apps actually installed; on other platforms it falls
 /// back to a fixed list of CLI launchers (resolved against PATH at open time).
-#[tauri::command]
-fn cmd_list_installed_apps() -> Vec<AppTarget> {
+fn list_installed_apps_core() -> Vec<AppTarget> {
     // (id, label, [candidate .app bundle names], cli command)
     let candidates: [(&str, &str, &[&str], &str); 5] = [
         ("vscode", "VS Code", &["Visual Studio Code", "Code"], "code"),
@@ -315,11 +310,10 @@ fn cmd_list_installed_apps() -> Vec<AppTarget> {
 ///   - `app_name` → `open -a <app_name> <path>` on macOS
 ///   - `command`  → run the CLI binary with the path as the argument
 ///   - neither    → reveal the path in the OS file manager
-#[tauri::command]
-fn cmd_open_in_app(
-    path: String,
-    app_name: Option<String>,
-    command: Option<String>,
+fn open_in_app_core(
+    path: &str,
+    app_name: Option<&str>,
+    command: Option<&str>,
 ) -> Result<(), String> {
     use std::process::Command;
 
@@ -329,7 +323,7 @@ fn cmd_open_in_app(
     }
 
     // CLI command launch (cross-platform): `code <path>`, `cursor <path>`, …
-    if let Some(command) = command.as_ref().map(|c| c.trim()).filter(|c| !c.is_empty()) {
+    if let Some(command) = command.map(|c| c.trim()).filter(|c| !c.is_empty()) {
         let status = Command::new(command)
             .arg(trimmed_path)
             .status()
@@ -341,11 +335,7 @@ fn cmd_open_in_app(
     }
 
     // App launch by bundle name (macOS only).
-    if let Some(app_name) = app_name
-        .as_ref()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-    {
+    if let Some(app_name) = app_name.map(|a| a.trim()).filter(|a| !a.is_empty()) {
         #[cfg(target_os = "macos")]
         {
             let status = Command::new("open")
@@ -391,28 +381,7 @@ fn cmd_open_in_app(
         })
 }
 
-/// Returns the locked pi version embedded in this Pi Studio build
-/// (read from `scripts/pi-version.json` at compile time).
-#[tauri::command]
-fn cmd_get_pi_version() -> Result<String, String> {
-    Ok(locked_pi_version().to_string())
-}
-
-/// Returns the running Pi Studio app version (the `version` field from
-/// `src-tauri/Cargo.toml`, baked in at compile time). Surfaced in the
-/// Settings → Updates panel so users can verify what they're running.
-#[tauri::command]
-fn cmd_get_app_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-#[tauri::command]
-fn cmd_is_dev() -> bool {
-    cfg!(debug_assertions)
-}
-
-#[tauri::command]
-fn cmd_open_devtools(port: u16, app: AppHandle) -> Result<(), String> {
+fn open_devtools_core(port: u16, app: &AppHandle) -> Result<(), String> {
     let label = format!("workspace-{}", port);
     let window = app
         .get_webview_window(&label)
@@ -421,25 +390,35 @@ fn cmd_open_devtools(port: u16, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn cmd_list_pi_packages(manager: State<PiManagerState>) -> Result<Vec<String>, String> {
-    manager.list_configured_package_sources()
-}
+/// Open a URL in the user's default system browser. Uses the platform opener
+/// (`open` / `start` / `xdg-open`) directly so we don't depend on the
+/// deprecated shell-plugin `open`.
+fn open_external_core(url: &str) -> Result<(), String> {
+    use std::process::Command;
 
-#[tauri::command]
-fn cmd_install_pi_package(source: String, manager: State<PiManagerState>) -> Result<(), String> {
-    if source.trim().is_empty() {
-        return Err("Package source cannot be empty".to_string());
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Missing URL".to_string());
     }
-    manager.install_package_source(source.trim())
-}
 
-#[tauri::command]
-fn cmd_remove_pi_package(source: String, manager: State<PiManagerState>) -> Result<(), String> {
-    if source.trim().is_empty() {
-        return Err("Package source cannot be empty".to_string());
-    }
-    manager.remove_package_source(source.trim())
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg(trimmed).status();
+    #[cfg(target_os = "windows")]
+    let status = Command::new("cmd")
+        .args(["/C", "start", "", trimmed])
+        .status();
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let status = Command::new("xdg-open").arg(trimmed).status();
+
+    status
+        .map_err(|e| format!("Failed to open URL: {e}"))
+        .and_then(|s| {
+            if s.success() {
+                Ok(())
+            } else {
+                Err(format!("Opener exited with status {s}"))
+            }
+        })
 }
 
 // ─── Window helpers ───────────────────────────────────────────────────────────
@@ -701,6 +680,220 @@ async fn cmd_retry_startup(
     Ok(initial_port)
 }
 
+// ─── Auto-updater cores ─────────────────────────────────────────────────────
+
+/// Check GitHub for a newer release. Returns update metadata as JSON, or
+/// `Value::Null` when already up to date. Mirrors the shape the old JS
+/// `checkForUpdate` returned so the frontend renderer is unchanged.
+async fn check_for_update_core(app: &AppHandle) -> Result<Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(serde_json::json!({
+            "available": true,
+            "version": update.version,
+            "currentVersion": update.current_version,
+            "date": update.date.map(|d| d.to_string()),
+            "notes": update.body.clone().unwrap_or_default(),
+        })),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Download + install the available update, streaming progress frames through
+/// `progress` (broker → client). Replaces the Tauri `Channel` the JS used.
+async fn download_and_install_update_core(
+    app: &AppHandle,
+    progress: broker_ws::ProgressSink,
+) -> Result<Value, String> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => update,
+        None => return Ok(serde_json::json!({ "installed": false, "reason": "no_update" })),
+    };
+    let version = update.version.clone();
+
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let started = Arc::new(AtomicBool::new(false));
+    let chunk_sink = progress.clone();
+    let dl = downloaded.clone();
+    let started_flag = started.clone();
+    let finish_sink = progress.clone();
+
+    update
+        .download_and_install(
+            move |chunk_length, content_length| {
+                let total =
+                    dl.fetch_add(chunk_length as u64, Ordering::Relaxed) + chunk_length as u64;
+                if !started_flag.swap(true, Ordering::Relaxed) {
+                    chunk_sink(serde_json::json!({
+                        "phase": "started",
+                        "contentLength": content_length,
+                    }));
+                }
+                chunk_sink(serde_json::json!({
+                    "phase": "progress",
+                    "downloaded": total,
+                    "contentLength": content_length,
+                }));
+            },
+            move || {
+                finish_sink(serde_json::json!({ "phase": "finished" }));
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "installed": true, "version": version }))
+}
+
+// ─── Broker control handler ──────────────────────────────────────────────────
+
+/// Resolve a control command's target port: prefer the explicit port from the
+/// request, else fall back to the broker's active port.
+fn resolve_control_port(port: Option<u16>, broker: &BrokerWs) -> Result<u16, String> {
+    port.or_else(|| broker.active_port())
+        .ok_or_else(|| "No active pi instance".to_string())
+}
+
+/// Build + install the async handler the broker uses to execute `broker_control`
+/// requests from ANY client (desktop WebView, remote, mobile). It maps command
+/// names to the same cores the rest of the app uses, so behavior is identical
+/// regardless of transport. Native ops (folder picker, devtools, updater,
+/// open-in-app/external) require an OS host and are only meaningful when this
+/// handler is installed — which is exactly what `capabilities.native` advertises.
+fn install_control_handler(broker: &Arc<BrokerWs>, manager: Arc<PiManager>, app: AppHandle) {
+    let broker_for_handler = broker.clone();
+    let handler: broker_ws::ControlHandler = Arc::new(
+        move |command: String, args: Value, progress: broker_ws::ProgressSink| {
+            let manager = manager.clone();
+            let broker = broker_for_handler.clone();
+            let app = app.clone();
+            Box::pin(async move {
+                let arg = |key: &str| args.get(key).cloned().unwrap_or(Value::Null);
+                let arg_str = |key: &str| arg(key).as_str().map(|s| s.to_string());
+                let arg_u16 = |key: &str| {
+                    args.get(key)
+                        .and_then(Value::as_u64)
+                        .and_then(|n| u16::try_from(n).ok())
+                };
+                let arg_bool = |key: &str| args.get(key).and_then(Value::as_bool);
+
+                match command.as_str() {
+                    "open_workspace" => {
+                        let cwd = arg_str("cwd").ok_or("cwd is required")?;
+                        let session_path = arg_str("sessionPath");
+                        let port = open_workspace_core(
+                            &cwd,
+                            session_path.as_deref(),
+                            arg_bool("forceNewSession").unwrap_or(false),
+                            arg_bool("openWindow").unwrap_or(true),
+                            arg_bool("waitForHealth").unwrap_or(true),
+                            arg_bool("waitForSessions").unwrap_or(false),
+                            &manager,
+                            &broker,
+                            Some(&app),
+                        )
+                        .await?;
+                        Ok(Value::from(port))
+                    }
+                    "new_session" => {
+                        let port = resolve_control_port(arg_u16("port"), &broker)?;
+                        new_session_core(port, &manager, &broker)?;
+                        Ok(Value::Null)
+                    }
+                    "switch_session" => {
+                        let session_path =
+                            arg_str("sessionPath").ok_or("sessionPath is required")?;
+                        let port = resolve_control_port(arg_u16("port"), &broker)?;
+                        switch_session_core(port, &session_path, &manager, &broker)?;
+                        Ok(Value::Null)
+                    }
+                    "stop_instance" => {
+                        let port = resolve_control_port(arg_u16("port"), &broker)?;
+                        stop_instance_core(port, &manager, &broker);
+                        Ok(Value::Null)
+                    }
+                    "spawn_session_process" => {
+                        let session_file =
+                            arg_str("sessionFile").ok_or("sessionFile is required")?;
+                        let cwd = arg_str("cwd").ok_or("cwd is required")?;
+                        let workspace_port =
+                            resolve_control_port(arg_u16("workspacePort"), &broker)?;
+                        let port = spawn_session_process_core(
+                            workspace_port,
+                            &session_file,
+                            &cwd,
+                            &manager,
+                            &broker,
+                        )
+                        .await?;
+                        Ok(Value::from(port))
+                    }
+                    "get_pi_version" => Ok(Value::from(locked_pi_version())),
+                    "get_app_version" => Ok(Value::from(env!("CARGO_PKG_VERSION"))),
+                    "is_dev" => Ok(Value::from(cfg!(debug_assertions))),
+                    "pick_folder" => Ok(match pick_folder_core(&app).await {
+                        Some(path) => Value::from(path),
+                        None => Value::Null,
+                    }),
+                    "list_installed_apps" => {
+                        Ok(serde_json::to_value(list_installed_apps_core()).unwrap_or(Value::Null))
+                    }
+                    "open_in_app" => {
+                        let path = arg_str("path").ok_or("path is required")?;
+                        let app_name = arg_str("appName");
+                        let command = arg_str("command");
+                        open_in_app_core(&path, app_name.as_deref(), command.as_deref())?;
+                        Ok(Value::Null)
+                    }
+                    "open_external" => {
+                        let url = arg_str("url").ok_or("url is required")?;
+                        open_external_core(&url)?;
+                        Ok(Value::Null)
+                    }
+                    "open_devtools" => {
+                        let port = resolve_control_port(arg_u16("port"), &broker)?;
+                        open_devtools_core(port, &app)?;
+                        Ok(Value::Null)
+                    }
+                    "list_pi_packages" => {
+                        let sources = manager.list_configured_package_sources()?;
+                        Ok(serde_json::to_value(sources).unwrap_or(Value::Null))
+                    }
+                    "install_pi_package" => {
+                        let source = arg_str("source").unwrap_or_default();
+                        if source.trim().is_empty() {
+                            return Err("Package source cannot be empty".to_string());
+                        }
+                        manager.install_package_source(source.trim())?;
+                        Ok(Value::Null)
+                    }
+                    "remove_pi_package" => {
+                        let source = arg_str("source").unwrap_or_default();
+                        if source.trim().is_empty() {
+                            return Err("Package source cannot be empty".to_string());
+                        }
+                        manager.remove_package_source(source.trim())?;
+                        Ok(Value::Null)
+                    }
+                    "check_for_update" => check_for_update_core(&app).await,
+                    "download_and_install_update" => {
+                        download_and_install_update_core(&app, progress).await
+                    }
+                    "relaunch_app" => app.restart(),
+                    other => Err(format!("Unknown control command: {other}")),
+                }
+            })
+        },
+    );
+    broker.set_control_handler(handler);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -723,6 +916,7 @@ fn main() {
             let static_dir = find_static_dir(app);
             let manager = Arc::new(PiManager::new(static_dir));
             let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
+            install_control_handler(&broker, manager.clone(), app.handle().clone());
 
             let home_cwd = dirs::home_dir()
                 .unwrap_or_default()
@@ -838,24 +1032,11 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            cmd_new_session,
-            cmd_switch_session,
-            cmd_open_workspace,
-            cmd_stop_instance,
-            cmd_pick_folder,
-            cmd_list_installed_apps,
-            cmd_open_in_app,
-            cmd_get_pi_version,
-            cmd_get_app_version,
-            cmd_is_dev,
-            cmd_open_devtools,
-            cmd_list_pi_packages,
-            cmd_install_pi_package,
-            cmd_remove_pi_package,
-            cmd_retry_startup,
-            cmd_spawn_session_process,
-        ])
+        // The main UI talks to the host exclusively over the broker WebSocket
+        // (`broker_control`); the only remaining Tauri IPC command is
+        // `cmd_retry_startup`, used by the native bootstrap error window
+        // (bootstrap.html) which is not part of the decoupled web UI.
+        .invoke_handler(tauri::generate_handler![cmd_retry_startup])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle: &tauri::AppHandle, event| {

@@ -9,6 +9,7 @@ import { createAppUpdater } from "./app-updater.js";
 import { setupVoiceInput } from "./app-voice-input.js";
 import { DialogHandler } from "./dialogs.js";
 import { FileBrowser } from "./file-browser.js";
+import { anchorHistoryToBottom } from "./history-scroll-anchor.js";
 import { setupMessagesInsets } from "./layout-insets.js";
 import { MessageRenderer } from "./message-renderer.js";
 import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
@@ -22,6 +23,7 @@ import {
 import { StateManager } from "./state.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
+import { initTransport } from "./transport.js";
 import { resolveWebSocketUrl, WebSocketClient } from "./websocket-client.js";
 import {
   openFolderAsWorkspace,
@@ -40,8 +42,8 @@ const fetchInstances = async () => {
   }
 };
 const getCurrentPort = () => {
-  const fromTauri = window.tauriNative?.currentPort?.();
-  if (typeof fromTauri === "number") return fromTauri;
+  const fromTransport = transport?.currentPort?.();
+  if (typeof fromTransport === "number") return fromTransport;
   const fromLocation = Number(location.port);
   return Number.isFinite(fromLocation) && fromLocation > 0 ? fromLocation : 47821;
 };
@@ -126,6 +128,16 @@ function dismissBootSwapOverlayWhenReady() {
 // Initialize components
 const wsUrl = resolveWebSocketUrl(window);
 const wsClient = new WebSocketClient(wsUrl);
+// Unified control transport: every process/window lifecycle + native op goes
+// through the broker WebSocket (broker_control). No Tauri IPC hooks — the
+// desktop WebView, a remote client, and a mobile client all use the same API.
+// Native-only ops are gated on
+// `transport.capabilities.native` (advertised by the broker handshake).
+const transport = initTransport({ wsClient, env: window });
+// True once the broker advertises a native (OS/window) control handler — i.e.
+// we're attached to the desktop host. Drives native-only UI gating. Starts
+// false and flips when the `capabilities` frame arrives (see listener below).
+const nativeAvailable = () => transport.capabilities.native;
 const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById("messages"));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById("messages"));
@@ -327,14 +339,6 @@ const fileSidebarUp = document.getElementById("file-sidebar-up");
 const fileList = document.getElementById("file-list");
 const fileSidebarPath = document.getElementById("file-sidebar-path");
 const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput);
-const isTauriRuntime = Boolean(window.tauriNative?.isTauri || window.__TAURI__?.core?.invoke);
-
-if (!isTauriRuntime) {
-  messageRenderer.renderError(
-    "This app is Tauri-only. Please launch it from the Tauri desktop app.",
-  );
-}
-
 fileSidebarToggle.addEventListener("click", () => {
   const isCollapsed = fileSidebar.classList.toggle("collapsed");
   if (!isCollapsed && !fileBrowser.currentPath) {
@@ -388,7 +392,7 @@ function getSelectedOpenApp() {
 
 function refreshHeaderOpenAppButton() {
   if (!headerOpenApp.el) return;
-  const hasNative = !!(window.tauriNative && typeof window.tauriNative.openInApp === "function");
+  const hasNative = nativeAvailable();
   const path = getCurrentWorkspacePath();
   const selected = getSelectedOpenApp();
   if (!hasNative || !selected || !path || headerOpenApp.apps.length === 0) {
@@ -402,15 +406,14 @@ function refreshHeaderOpenAppButton() {
 }
 
 async function openWorkspaceInApp(app) {
-  const tauri = window.tauriNative;
   const target = app || getSelectedOpenApp();
   const path = getCurrentWorkspacePath();
-  if (!tauri || !target || !path) return;
+  if (!nativeAvailable() || !target || !path) return;
   headerOpenApp.selectedId = target.id;
   localStorage.setItem(HEADER_OPEN_APP_STORAGE_KEY, target.id);
   refreshHeaderOpenAppButton();
   try {
-    await tauri.openInApp(path, {
+    await transport.openInApp(path, {
       appName: target.appName ?? null,
       command: target.command ?? null,
     });
@@ -447,10 +450,9 @@ function toggleHeaderOpenAppMenu() {
 }
 
 async function loadHeaderOpenApps() {
-  const tauri = window.tauriNative;
-  if (!tauri || typeof tauri.listInstalledApps !== "function") return;
+  if (!nativeAvailable()) return;
   try {
-    const apps = await tauri.listInstalledApps();
+    const apps = await transport.listInstalledApps();
     headerOpenApp.apps = Array.isArray(apps) ? apps : [];
     if (!headerOpenApp.apps.some((a) => a.id === headerOpenApp.selectedId)) {
       headerOpenApp.selectedId = headerOpenApp.apps[0]?.id || null;
@@ -777,7 +779,7 @@ function handleAgentEnd(event = null) {
     if (live) sidebar.setStreaming(live, false);
     foregroundPort = findPortForSession(liveInstances, targetPath, foregroundPort);
     syncWorkspaceIndicatorFromInstances();
-    window.tauriNative.switchSession(targetPath, foregroundPort).catch((e) => {
+    transport.switchSession(targetPath, foregroundPort).catch((e) => {
       messageRenderer.renderError(`Failed to switch session: ${e}`);
     });
     return;
@@ -1450,7 +1452,7 @@ function openModelDropdown() {
       empty.className = "model-dropdown-empty";
       empty.innerHTML = `
         <div style="padding:14px;color:var(--text-dim);font-size:12px;line-height:1.5">
-          <div style="font-weight:600;color:var(--text-primary);margin-bottom:6px">No models available</div>
+          <div style="color:var(--text-primary);margin-bottom:6px">No models available</div>
           <div>No API keys configured. Set a key in Settings &rarr; Authentication.</div>
           <button type="button" class="btn-primary" style="margin-top:10px">Open Settings</button>
         </div>`;
@@ -1590,9 +1592,11 @@ document.addEventListener("keydown", (e) => {
   // Cmd+Option+I (macOS) / Ctrl+Alt+I (Windows/Linux) — Open webview inspector.
   if ((e.key === "i" || e.key === "I") && (e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey) {
     e.preventDefault();
-    window.tauriNative?.openDevtools?.().catch((err) => {
-      messageRenderer.renderError(`Failed to open inspector: ${err}`);
-    });
+    if (nativeAvailable()) {
+      transport.openDevtools().catch((err) => {
+        messageRenderer.renderError(`Failed to open inspector: ${err}`);
+      });
+    }
   }
 });
 
@@ -1737,12 +1741,12 @@ async function activateNewParallelSession(port, cwd) {
 }
 
 async function newSession() {
-  if (window.tauriNative) {
+  if (nativeAvailable()) {
     // Default behavior is process-efficient: create the new chat in-place on
     // the current pi process. Only spawn a dedicated process when a parallel
     // task is actually running.
     await startInWindowNewSession({
-      tauriNative: window.tauriNative,
+      transport,
       getCurrentCwd: getCurrentWorkspacePath,
       getCurrentPort: getActivePort,
       fetchInstances,
@@ -1783,7 +1787,7 @@ async function handleNewProjectChat(project) {
     // a parallel run is active.
     const launched = await startNewProjectChat({
       project,
-      tauriNative: window.tauriNative,
+      transport,
       getCurrentPort: getActivePort,
       getCurrentCwd: getCurrentWorkspacePath,
       shouldSpawnParallel: () => state.isStreaming,
@@ -1858,8 +1862,8 @@ async function handleSessionSelectImpl(session, project) {
   updateCostDisplay();
   updateTokenUsage();
 
-  // In Tauri: switch session via RPC command to the current pi instance
-  if (window.tauriNative && session.filePath) {
+  // Native host: switch session via control command to the current pi instance
+  if (nativeAvailable() && session.filePath) {
     const wasStreaming = state.isStreaming;
     clearMessageQueue();
     state.reset();
@@ -1889,11 +1893,11 @@ async function handleSessionSelectImpl(session, project) {
     }
 
     if (wasStreaming) {
-      if (window.tauriNative.spawnSessionProcess) {
+      if (transport.spawnSessionProcess) {
         let targetPort = null;
         try {
           const cwd = getCurrentWorkspacePath();
-          targetPort = await window.tauriNative.spawnSessionProcess(session.filePath, cwd);
+          targetPort = await transport.spawnSessionProcess(session.filePath, cwd);
         } catch (e) {
           console.error(
             "[App] Failed to spawn session process, falling back to deferred switch:",
@@ -1937,7 +1941,7 @@ async function handleSessionSelectImpl(session, project) {
         selectedSession: session.filePath,
         targetPort: foregroundPort,
       });
-      await window.tauriNative.switchSession(session.filePath, foregroundPort);
+      await transport.switchSession(session.filePath, foregroundPort);
       wsClient.send({ type: "mirror_sync_request" });
     } catch (e) {
       messageRenderer.renderError(`Failed to switch session: ${e}`);
@@ -2353,16 +2357,7 @@ function renderSessionHistory(entries) {
   updateTokenUsage();
   fetchContextWindow();
 
-  // Jump to bottom instantly (no smooth scroll animation)
-  const messagesEl = document.getElementById("messages");
-  messagesEl.style.scrollBehavior = "auto";
-  requestAnimationFrame(() => {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    // Restore smooth scrolling after a frame
-    requestAnimationFrame(() => {
-      messagesEl.style.scrollBehavior = "";
-    });
-  });
+  anchorHistoryToBottom(document.getElementById("messages"));
 }
 
 // ═══════════════════════════════════════
@@ -2579,8 +2574,8 @@ async function loadPiVersion() {
   }
   piVersionInflight = (async () => {
     try {
-      if (window.tauriNative?.getPiVersion) {
-        const version = await window.tauriNative.getPiVersion();
+      if (nativeAvailable()) {
+        const version = await transport.getPiVersion();
         if (version) {
           piVersionCache = version;
           piVersionValue.textContent = piVersionCache;
@@ -2710,9 +2705,9 @@ async function fetchBrowsePackages() {
 }
 
 async function fetchInstalledSources() {
-  if (!window.tauriNative?.listPiPackages) return new Set();
+  if (!nativeAvailable()) return new Set();
   try {
-    const configured = await window.tauriNative.listPiPackages();
+    const configured = await transport.listPiPackages();
     return new Set(Array.isArray(configured) ? configured : []);
   } catch {
     return new Set();
@@ -2734,8 +2729,8 @@ function normalizeRepoUrl(url) {
 
 function openExternalLink(url) {
   if (!url) return;
-  if (window.tauriNative?.openExternal) {
-    window.tauriNative.openExternal(url).catch((err) => {
+  if (nativeAvailable()) {
+    transport.openExternal(url).catch((err) => {
       console.error("[browse] failed to open external link:", err);
     });
   } else {
@@ -2966,7 +2961,7 @@ function createBrowseRow(pkg) {
   button.type = "button";
   button.className = "settings-value-btn";
 
-  const canManage = Boolean(window.tauriNative?.installPiPackage);
+  const canManage = nativeAvailable();
   if (!canManage) {
     button.disabled = true;
     setExtensionActionButton(button, "Desktop only");
@@ -2982,10 +2977,10 @@ function createBrowseRow(pkg) {
       status.title = status.textContent;
       try {
         if (installed) {
-          await window.tauriNative.removePiPackage(source);
+          await transport.removePiPackage(source);
           browseInstalledSet.delete(source);
         } else {
-          await window.tauriNative.installPiPackage(source);
+          await transport.installPiPackage(source);
           browseInstalledSet.add(source);
         }
         renderBrowsePackages();
@@ -3054,6 +3049,7 @@ if (browseSortEl) {
 
 const sidebarUpdateBtn = document.getElementById("sidebar-update-btn");
 const updater = createAppUpdater({
+  transport,
   appVersionValue: document.getElementById("setting-app-version-value"),
   updaterSection: document.getElementById("setting-updater-section"),
   checkUpdatesBtn: document.getElementById("btn-check-updates"),
@@ -3069,6 +3065,15 @@ const updater = createAppUpdater({
   },
 });
 void updater.initUpdaterUI();
+
+// Native capabilities arrive asynchronously over the broker WS (the handshake
+// frame lands right after connect). Re-evaluate native-gated UI once it's known
+// so buttons that were hidden on first paint appear when attached to the host.
+wsClient.addEventListener("capabilities", () => {
+  refreshHeaderOpenAppButton();
+  void loadHeaderOpenApps();
+  void updater.initUpdaterUI();
+});
 
 function buildThemeGrid() {
   themeGrid.innerHTML = "";
@@ -3245,7 +3250,7 @@ openFolderBtn?.addEventListener("click", async () => {
   setWorkspaceLaunchInProgress(true);
   try {
     await openFolderAsWorkspace({
-      tauriNative: window.tauriNative,
+      transport,
       fetchInstances,
       getCurrentPort: getActivePort,
       navigate: navigateInWindow,

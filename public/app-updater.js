@@ -1,4 +1,5 @@
 export function createAppUpdater({
+  transport,
   appVersionValue,
   updaterSection,
   checkUpdatesBtn,
@@ -18,6 +19,9 @@ export function createAppUpdater({
   let pendingUpdate = null;
   let updaterBusy = false;
   let updateCheckFailed = false;
+  let uiInitialized = false;
+  let startupCheckTimer = null;
+  let periodicCheckInterval = null;
   const BETA_VERSION_RE = /-beta(?:[.-]|$)/i;
   const NUMERIC_PRERELEASE_VERSION_RE = /-\d+(?:\.\d+)*$/;
   let currentAppVersion = APP_VERSION;
@@ -120,20 +124,13 @@ export function createAppUpdater({
     }
 
     try {
-      if (window.tauriNative?.getAppVersion) {
-        const v = await window.tauriNative.getAppVersion();
+      if (transport?.capabilities?.native) {
+        const v = await transport.getAppVersion();
         if (v) {
           appVersionValue.textContent = v;
           currentAppVersion = v;
           return v;
         }
-      }
-      const tauriApp = window.__TAURI__?.app;
-      if (tauriApp?.getVersion) {
-        const v = await tauriApp.getVersion();
-        appVersionValue.textContent = v || "unknown";
-        currentAppVersion = v || "unknown";
-        return currentAppVersion;
       }
     } catch (err) {
       console.warn("[updater] unable to read app version:", err);
@@ -175,9 +172,9 @@ export function createAppUpdater({
       return null;
     }
 
-    if (!window.tauriNative?.hasUpdater) {
+    if (!transport?.hasUpdater) {
       if (!silent) setUpdateStatus("Auto-updates are only available in the desktop app.", "warn");
-      if (updaterSection && !window.tauriNative) updaterSection.hidden = true;
+      if (updaterSection && !transport?.capabilities?.native) updaterSection.hidden = true;
       setSidebarUpdateButton({ visible: false });
       return null;
     }
@@ -191,7 +188,7 @@ export function createAppUpdater({
     if (!silent) setUpdateStatus("Checking for updates...", "info");
 
     try {
-      const update = await window.tauriNative.checkForUpdate();
+      const update = await transport.checkForUpdate();
       if (!update) {
         pendingUpdate = null;
         updateCheckFailed = false;
@@ -238,7 +235,7 @@ export function createAppUpdater({
 
   async function installPendingUpdate() {
     if (updaterBusy || !pendingUpdate) return;
-    if (!window.tauriNative?.downloadAndInstallUpdate) return;
+    if (!transport?.capabilities?.native) return;
 
     updaterBusy = true;
     syncSidebarUpdateButton();
@@ -249,7 +246,7 @@ export function createAppUpdater({
     if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
 
     try {
-      await window.tauriNative.downloadAndInstallUpdate((evt) => {
+      await transport.downloadAndInstallUpdate((evt) => {
         if (evt.phase === "started") {
           setUpdateStatus(
             evt.contentLength
@@ -271,7 +268,7 @@ export function createAppUpdater({
       updateCheckFailed = false;
       syncSidebarUpdateButton();
       setTimeout(() => {
-        window.tauriNative?.relaunchApp?.().catch((err) => {
+        transport?.relaunchApp?.().catch((err) => {
           console.error("[updater] relaunch failed:", err);
           setUpdateStatus("Please restart Pi Studio to finish updating.", "warn");
           updateCheckFailed = true;
@@ -299,7 +296,7 @@ export function createAppUpdater({
   async function isDevBuild() {
     if (isDevBuildCache !== null) return isDevBuildCache;
     try {
-      isDevBuildCache = !!(await window.tauriNative?.isDev?.());
+      isDevBuildCache = !!(transport?.capabilities?.native && (await transport.isDev()));
     } catch {
       isDevBuildCache = false;
     }
@@ -309,11 +306,14 @@ export function createAppUpdater({
   async function initUpdaterUI() {
     if (!updaterSection) return;
 
-    if (!window.tauriNative?.hasUpdater) {
+    if (!transport?.hasUpdater) {
       updaterSection.hidden = true;
       syncSidebarUpdateButton();
       return;
     }
+    // Capabilities can arrive asynchronously and may be re-emitted on reconnect.
+    // Ensure the section becomes visible once native updater support is known.
+    updaterSection.hidden = false;
 
     const appVersion = await loadAppVersion();
 
@@ -336,6 +336,12 @@ export function createAppUpdater({
       return;
     }
 
+    if (uiInitialized) {
+      syncSidebarUpdateButton();
+      return;
+    }
+    uiInitialized = true;
+
     checkUpdatesBtn?.addEventListener("click", () => {
       checkForUpdates({ silent: false });
     });
@@ -343,11 +349,11 @@ export function createAppUpdater({
       installPendingUpdate();
     });
 
-    setTimeout(() => {
+    startupCheckTimer = setTimeout(() => {
       checkForUpdates({ silent: true }).catch(() => {});
     }, 5_000);
 
-    setInterval(
+    periodicCheckInterval = setInterval(
       () => {
         if (document.visibilityState === "visible") {
           checkForUpdates({ silent: true }).catch(() => {});
@@ -355,6 +361,10 @@ export function createAppUpdater({
       },
       6 * 60 * 60 * 1000,
     );
+    // Keep references intentionally; helps future teardown work and makes
+    // duplicate-initialization bugs obvious in devtools.
+    void startupCheckTimer;
+    void periodicCheckInterval;
     syncSidebarUpdateButton();
   }
 

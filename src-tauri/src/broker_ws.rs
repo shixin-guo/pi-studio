@@ -1,3 +1,4 @@
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -12,6 +13,20 @@ const PROTOCOL_VERSION: u8 = 1;
 
 type Tx = mpsc::UnboundedSender<String>;
 
+/// Emits an intermediate progress frame for an in-flight `broker_control`
+/// request (e.g. updater download chunks). The broker wires this to the
+/// requesting client's socket, tagged with the original `requestId`.
+pub type ProgressSink = Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Async handler for `broker_control` requests. Given a command name + args
+/// (+ a progress sink for streaming ops) it resolves to `Ok(result_json)` or
+/// `Err(message)`. Injected from main.rs so the broker can run process/window
+/// lifecycle and native ops on behalf of any client (desktop WebView, remote,
+/// mobile) without main.rs and broker_ws forming a circular dependency.
+pub type ControlHandler = Arc<
+    dyn Fn(String, Value, ProgressSink) -> BoxFuture<'static, Result<Value, String>> + Send + Sync,
+>;
+
 #[derive(Default)]
 struct BrokerInner {
     ui_clients: Mutex<HashMap<u64, Tx>>,
@@ -20,6 +35,7 @@ struct BrokerInner {
     disabled_ports: Mutex<HashSet<u16>>,
     active_port: Mutex<Option<u16>>,
     next_client_id: AtomicU64,
+    control_handler: Mutex<Option<ControlHandler>>,
 }
 
 #[derive(Clone)]
@@ -63,6 +79,16 @@ impl BrokerWs {
 
     pub fn set_active_port(&self, port: u16) {
         *self.inner.active_port.lock().unwrap() = Some(port);
+    }
+
+    pub fn active_port(&self) -> Option<u16> {
+        *self.inner.active_port.lock().unwrap()
+    }
+
+    /// Install the handler used to execute `broker_control` requests. Called
+    /// once from main.rs after PiManager + BrokerWs exist.
+    pub fn set_control_handler(&self, handler: ControlHandler) {
+        *self.inner.control_handler.lock().unwrap() = Some(handler);
     }
 
     pub fn register_session(&self, port: u16, session_id: &str) {
@@ -141,7 +167,24 @@ impl BrokerWs {
         let client_id = self.inner.next_client_id.fetch_add(1, Ordering::Relaxed);
         let (mut writer, mut reader) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        self.inner.ui_clients.lock().unwrap().insert(client_id, tx);
+        self.inner
+            .ui_clients
+            .lock()
+            .unwrap()
+            .insert(client_id, tx.clone());
+
+        // Capability handshake: tell the client whether native (OS/window) ops
+        // are available. Inside the desktop app a control handler is installed
+        // (native:true); a bare broker without a handler can only forward chat.
+        let native = self.inner.control_handler.lock().unwrap().is_some();
+        let _ = tx.send(
+            json!({
+                "type": "capabilities",
+                "protocolVersion": PROTOCOL_VERSION,
+                "native": native,
+            })
+            .to_string(),
+        );
 
         let writer_task = tauri::async_runtime::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -153,7 +196,7 @@ impl BrokerWs {
 
         while let Some(item) = reader.next().await {
             match item {
-                Ok(Message::Text(text)) => self.route_ui_message(&text),
+                Ok(Message::Text(text)) => self.route_ui_message(&text, &tx),
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(err) => {
@@ -167,11 +210,20 @@ impl BrokerWs {
         writer_task.abort();
     }
 
-    fn route_ui_message(&self, text: &str) {
+    fn route_ui_message(&self, text: &str, client_tx: &Tx) {
         let Ok(value) = serde_json::from_str::<Value>(text) else {
             log::warn!("[broker-ws] invalid UI message");
             return;
         };
+
+        // `broker_control` requests are NOT forwarded to a pi upstream — they are
+        // process/window lifecycle or native ops handled by the host (Rust).
+        // Dispatch to the injected control handler and reply to this client only.
+        if value.get("type").and_then(Value::as_str) == Some("broker_control") {
+            self.dispatch_control(&value, client_tx);
+            return;
+        }
+
         let Some(port) = self.resolve_command_port(&value) else {
             log::warn!("[broker-ws] no route for UI command: {}", value);
             return;
@@ -193,6 +245,77 @@ impl BrokerWs {
         } else {
             log::warn!("[broker-ws] upstream {} not connected", port);
         }
+    }
+
+    fn dispatch_control(&self, value: &Value, client_tx: &Tx) {
+        let request_id = value
+            .get("requestId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let command = value
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let args = value.get("args").cloned().unwrap_or(Value::Null);
+
+        let handler = self.inner.control_handler.lock().unwrap().clone();
+        let tx = client_tx.clone();
+
+        let Some(handler) = handler else {
+            let _ = tx.send(
+                json!({
+                    "type": "control_response",
+                    "requestId": request_id,
+                    "ok": false,
+                    "error": "Control commands are not available on this server",
+                })
+                .to_string(),
+            );
+            return;
+        };
+
+        // Progress sink: streams intermediate frames (e.g. updater download
+        // chunks) back to the requesting client, tagged with the requestId.
+        let progress_tx = tx.clone();
+        let progress_request_id = request_id.clone();
+        let sink: ProgressSink = Arc::new(move |data: Value| {
+            let _ = progress_tx.send(
+                json!({
+                    "type": "control_progress",
+                    "requestId": progress_request_id,
+                    "data": data,
+                })
+                .to_string(),
+            );
+        });
+
+        log::info!(
+            "[broker-ws] control command={} request_id={}",
+            command,
+            request_id
+        );
+        tauri::async_runtime::spawn(async move {
+            let response = match handler(command.clone(), args, sink).await {
+                Ok(result) => json!({
+                    "type": "control_response",
+                    "requestId": request_id,
+                    "ok": true,
+                    "result": result,
+                }),
+                Err(error) => {
+                    log::warn!("[broker-ws] control command {} failed: {}", command, error);
+                    json!({
+                        "type": "control_response",
+                        "requestId": request_id,
+                        "ok": false,
+                        "error": error,
+                    })
+                }
+            };
+            let _ = tx.send(response.to_string());
+        });
     }
 
     fn resolve_command_port(&self, value: &Value) -> Option<u16> {
