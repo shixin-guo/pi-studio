@@ -1200,6 +1200,29 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // Auto-redirect remote browsers to the full mobile URL so users don't
+    // need to manually append ?mobile=1&brokerWs=... to the LAN address.
+    const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
+    const host = req.headers.host || "";
+    const hostName = host.split(":")[0];
+    const isLoopback = hostName === "localhost" || hostName === "127.0.0.1" || hostName === "::1";
+    const rawPath = urlPath.split("?")[0];
+    const hasParams = urlPath.includes("mobile=1");
+    if (
+      rawPath === "/" &&
+      !isLoopback &&
+      !hasParams &&
+      Number.isFinite(brokerPort) &&
+      brokerPort > 0
+    ) {
+      const redirect = new URL(`http://${host}/`);
+      redirect.searchParams.set("mobile", "1");
+      redirect.searchParams.set("brokerWs", `ws://${hostName}:${brokerPort}/ui-ws`);
+      res.writeHead(302, { Location: redirect.toString() });
+      res.end();
+      return;
+    }
+
     // Strip query params
     urlPath = urlPath.split("?")[0];
 
@@ -2576,7 +2599,7 @@ export default function (pi: ExtensionAPI) {
           return new Response("WebSocket upgrade failed", { status: 400 });
         }
         if (!url.pathname.startsWith("/api/")) {
-          return serveStaticAssetBun(url);
+          return serveStaticAssetBun(url, req);
         }
         return runNodeStyleHandler(req);
       }
@@ -2585,8 +2608,28 @@ export default function (pi: ExtensionAPI) {
       // (pretty `/` and `/cost` paths, directory traversal guard, 404 on
       // missing files) but reads via `Bun.file` so large assets stream
       // straight from disk without going through our buffering adapter.
-      async function serveStaticAssetBun(url: URL): Promise<Response> {
+      async function serveStaticAssetBun(url: URL, req: Request): Promise<Response> {
         let urlPath = url.pathname;
+
+        // Auto-redirect remote browsers to the full mobile URL.
+        const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
+        const host = req.headers.get("host") || url.host;
+        const hostName = host.split(":")[0];
+        const isLoopback =
+          hostName === "localhost" || hostName === "127.0.0.1" || hostName === "::1";
+        if (
+          urlPath === "/" &&
+          !isLoopback &&
+          !url.searchParams.has("mobile") &&
+          Number.isFinite(brokerPort) &&
+          brokerPort > 0
+        ) {
+          const redirect = new URL(`http://${host}/`);
+          redirect.searchParams.set("mobile", "1");
+          redirect.searchParams.set("brokerWs", `ws://${hostName}:${brokerPort}/ui-ws`);
+          return Response.redirect(redirect.toString(), 302);
+        }
+
         if (urlPath === "/") urlPath = "/index.html";
         if (urlPath === "/cost" || urlPath === "/cost/") urlPath = "/cost.html";
 

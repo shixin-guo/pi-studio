@@ -951,7 +951,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 4px 8px;
+  padding: 4px 4px;
   background: none;
   border: none;
   cursor: pointer;
@@ -960,6 +960,7 @@ body {
   transition: all var(--duration) var(--ease);
 }
 
+
 .header-open-app-toggle {
   padding: 4px 5px;
   border-left: 1px solid var(--border, rgba(255, 255, 255, 0.12));
@@ -967,12 +968,33 @@ body {
 
 .header-open-app-btn:hover,
 .header-open-app-toggle:hover {
-  background: var(--accent);
-  color: var(--bg);
+  background: var(--bg-glass-hover);
 }
 
-.header-open-app-label {
-  white-space: nowrap;
+.header-open-app-btn:active,
+.header-open-app-toggle:active {
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.header-open-app-logo {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.header-open-app-logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.header-open-app-logo-text {
+  line-height: 1;
 }
 
 .header-open-app-menu {
@@ -980,7 +1002,7 @@ body {
   top: calc(100% + 4px);
   right: 0;
   z-index: 1000;
-  min-width: 160px;
+  min-width: 120px;
   padding: 4px;
   background: var(--bg-elevated, var(--bg));
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
@@ -998,6 +1020,7 @@ body {
 .header-open-app-menu-item {
   display: flex;
   align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 6px 10px;
   background: none;
@@ -1010,10 +1033,17 @@ body {
   transition: background var(--duration) var(--ease);
 }
 
-.header-open-app-menu-item:hover,
+.header-open-app-menu-item:hover {
+  background: var(--bg-glass-hover);
+}
+
 .header-open-app-menu-item.active {
-  background: var(--accent);
-  color: var(--bg);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.header-open-app-menu-item.active:hover {
+  background: var(--accent-glow);
 }
 
 .sidebar-toggle,

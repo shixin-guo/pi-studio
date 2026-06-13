@@ -245,9 +245,10 @@ fn macos_installed_app_names() -> std::collections::HashSet<String> {
 /// back to a fixed list of CLI launchers (resolved against PATH at open time).
 fn list_installed_apps_core() -> Vec<AppTarget> {
     // (id, label, [candidate .app bundle names], cli command)
-    let candidates: [(&str, &str, &[&str], &str); 5] = [
+    let candidates: [(&str, &str, &[&str], &str); 6] = [
         ("vscode", "VS Code", &["Visual Studio Code", "Code"], "code"),
         ("cursor", "Cursor", &["Cursor"], "cursor"),
+        ("webstorm", "WebStorm", &["WebStorm", "WebStorm EAP"], "webstorm"),
         ("zed", "Zed", &["Zed"], "zed"),
         ("terminal", "Terminal", &["Terminal", "iTerm", "Warp"], ""),
         ("ghostty", "Ghostty", &["Ghostty"], ""),

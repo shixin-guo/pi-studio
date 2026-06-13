@@ -392,10 +392,28 @@ document.getElementById("file-sidebar-finder").addEventListener("click", () => {
 // Mirrors the Codex-style split button in the chat header.
 // ═══════════════════════════════════════
 const HEADER_OPEN_APP_STORAGE_KEY = "pi-studio-open-app";
+const HEADER_OPEN_APP_MONOGRAMS = {
+  vscode: "VS",
+  cursor: "C",
+  webstorm: "WS",
+  zed: "Z",
+  terminal: "T",
+  ghostty: "G",
+  finder: "F",
+};
+const HEADER_OPEN_APP_ICONS = {
+  vscode: "icons/app-vscode.png",
+  cursor: "icons/app-cursor.svg",
+  webstorm: "icons/app-webstorm.svg",
+  zed: "icons/app-zed.png",
+  terminal: "icons/app-terminal.svg",
+  ghostty: "icons/app-ghostty.png",
+  finder: "icons/app-finder.png",
+};
 const headerOpenApp = {
   el: document.getElementById("header-open-app"),
   btn: document.getElementById("header-open-app-btn"),
-  label: document.getElementById("header-open-app-label"),
+  logo: document.getElementById("header-open-app-logo"),
   toggle: document.getElementById("header-open-app-toggle"),
   menu: document.getElementById("header-open-app-menu"),
   apps: [],
@@ -410,6 +428,25 @@ function getSelectedOpenApp() {
   );
 }
 
+function openAppMonogram(app) {
+  if (!app?.id) return "•";
+  return HEADER_OPEN_APP_MONOGRAMS[app.id] || app.label?.slice(0, 1).toUpperCase() || "•";
+}
+
+function openAppIconPath(app) {
+  if (!app?.id) return "";
+  return HEADER_OPEN_APP_ICONS[app.id] || "";
+}
+
+function renderOpenAppLogo(app) {
+  const icon = openAppIconPath(app);
+  const monogram = openAppMonogram(app);
+  if (icon) {
+    return `<img src="${icon}" alt="" class="header-open-app-logo-img">`;
+  }
+  return `<span class="header-open-app-logo-text">${monogram}</span>`;
+}
+
 function refreshHeaderOpenAppButton() {
   if (!headerOpenApp.el) return;
   const hasNative = nativeAvailable();
@@ -420,7 +457,7 @@ function refreshHeaderOpenAppButton() {
     return;
   }
   headerOpenApp.el.classList.remove("hidden");
-  if (headerOpenApp.label) headerOpenApp.label.textContent = selected.label;
+  if (headerOpenApp.logo) headerOpenApp.logo.innerHTML = renderOpenAppLogo(selected);
   headerOpenApp.btn.title = `Open ${path} in ${selected.label}`;
   headerOpenApp.btn.setAttribute("aria-label", `Open workspace in ${selected.label}`);
 }
@@ -458,7 +495,9 @@ function toggleHeaderOpenAppMenu() {
     row.type = "button";
     row.className = "header-open-app-menu-item";
     if (app.id === headerOpenApp.selectedId) row.classList.add("active");
-    row.textContent = `Open in ${app.label}`;
+    row.title = `Open in ${app.label}`;
+    row.setAttribute("aria-label", `Open in ${app.label}`);
+    row.innerHTML = `<span class="header-open-app-logo" aria-hidden="true">${renderOpenAppLogo(app)}</span><span>${app.label}</span>`;
     row.addEventListener("click", (ev) => {
       ev.stopPropagation();
       closeHeaderOpenAppMenu();
