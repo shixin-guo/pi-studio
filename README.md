@@ -6,9 +6,9 @@ A local desktop GUI for the [Pi](https://github.com/badlogic/pi-mono) coding age
 
 Pi Studio ships a known-good build of the `pi` runtime **inside the .app bundle**, so there's no separate `pi` install to manage, no PATH shenanigans, and no version drift between Pi Studio and the agent it talks to.
 
-![Pi Studio dark mode](docs/images/dark.png)
+<img width="2516" height="1664" alt="Gemini_Generated_Image_qajghoqajghoqajg" src="https://github.com/user-attachments/assets/27d1b71e-77e8-420c-84ab-5e56eb48335a" />
 
-![Pi Studio terracotta theme](docs/images/terracotta.png)
+
 
 ---
 
@@ -66,6 +66,8 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 - Inline session rename, favourites, tags, and filtering
 
 ### 🗃️ Projects & Workspace
+<img width="1300" height="860" alt="f19270_Screen_shot_1781554397794" src="https://github.com/user-attachments/assets/ffde7b7a-1eb9-4da7-8916-e06b612aaea1" />
+
 
 - **Multi-project** — each project gets its own window, working directory, session history, and agent
 - Shows the **current git branch** in the project header
@@ -73,16 +75,24 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 - Native folder picker to open any project without touching the terminal
 
 ### 📱 Mobile & LAN Access
+<img width="1300" height="860" alt="656994_Screen_shot_1781554410214" src="https://github.com/user-attachments/assets/f50ce09d-1ba7-4a67-93dd-f8ff1bc2631f" />
+
 
 - **LAN QR code** — scan to open Pi Studio on any device on the same network
 - Mobile-optimised URL handling and App Launcher support (installable as PWA on iOS/Android)
 
 ### 📦 Package Manager
+<img width="1300" height="860" alt="517912_Screen_shot_1781554519393" src="https://github.com/user-attachments/assets/e7e3a100-16db-4b63-b257-801b7f6b5e00" />
+
 
 - Browse, install, and remove community packages from within the UI
 - Built on top of `pi install` — no separate package commands needed
 
 ### 💰 Cost & Usage Dashboard
+
+<img width="1728" height="1117" alt="332f23_Screenshot 2026-06-15 at 1 15 43 PM" src="https://github.com/user-attachments/assets/1c381a9f-c587-406f-8f62-f3f029aa5c3e" />
+<img width="1728" height="1117" alt="b17b70_Screenshot 2026-06-15 at 1 15 51 PM" src="https://github.com/user-attachments/assets/d9f07d41-d38a-454d-a46a-1ab8ed34c19b" />
+
 
 - Per-session cost tracking with live token/cost metrics
 - Full cost dashboard with infobar, trends, and per-model breakdown
@@ -107,6 +117,8 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 - Drag files onto the input to insert their path
 
 ### ⚙️ Settings & Control
+<img width="1466" height="860" alt="d5ff1d_Screen_shot_1781554596458" src="https://github.com/user-attachments/assets/44f884de-f2d1-45af-8a13-9b8d01d227a5" />
+
 
 - Model picker with search/filter and keyboard support
 - Thinking level toggle (off / low / medium / high)
