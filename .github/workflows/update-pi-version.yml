@@ -117,6 +117,12 @@ jobs:
         if: |
           steps.compare.outputs.needs_update == 'true' &&
           steps.existing_pr.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: ${{ steps.release_notes.outputs.notes }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           NEW="${{ steps.latest.outputs.version }}"
           CURRENT="${{ steps.current.outputs.version }}"
@@ -130,9 +136,8 @@ jobs:
           git commit -m "chore: bump embedded pi to v${NEW}"
           git push origin "$BRANCH"
 
-          gh pr create \
-            --title "chore: bump embedded pi v${CURRENT} → v${NEW}" \
-            --body "## Embedded pi update
+          cat > /tmp/pr-body.md <<PREOF
+          ## Embedded pi update
 
           pi released [v${NEW}](https://github.com/earendil-works/pi/releases/tag/v${NEW}).
 
@@ -142,7 +147,7 @@ jobs:
           | New | \`${NEW}\` |
 
           ## Release notes
-          ${{ steps.release_notes.outputs.notes }}
+          ${RELEASE_NOTES}
 
           ## Checklist before merging
           - [ ] Run \`bun run fetch:pi\` locally and confirm it downloads successfully
@@ -151,7 +156,10 @@ jobs:
           - [ ] If breaking changes in release notes, update embedded-server or frontend accordingly
 
           ---
-          *This PR was opened automatically by the [check pi updates](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*" \
+          *This PR was opened automatically by the [check pi updates](${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}) workflow.*
+          PREOF
+
+          gh pr create \
+            --title "chore: bump embedded pi v${CURRENT} → v${NEW}" \
+            --body-file /tmp/pr-body.md \
             --label "dependencies"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
