@@ -76,6 +76,7 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 
 ### 📱 Mobile & LAN Access
 <img width="1300" height="860" alt="656994_Screen_shot_1781554410214" src="https://github.com/user-attachments/assets/f50ce09d-1ba7-4a67-93dd-f8ff1bc2631f" />
+<img width="585" height="1266" alt="IMG_1336" src="https://github.com/user-attachments/assets/d1975347-a3d9-49fd-9d66-94942016ed19" />
 
 
 - **LAN QR code** — scan to open Pi Studio on any device on the same network
