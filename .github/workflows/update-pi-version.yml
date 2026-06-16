@@ -134,7 +134,9 @@ jobs:
           git checkout -b "$BRANCH"
           git add scripts/pi-version.json
           git commit -m "chore: bump embedded pi to v${NEW}"
-          git push origin "$BRANCH"
+          # Force-push so re-runs overwrite any orphaned branch from a
+          # previous failed run (branch pushed but PR creation failed).
+          git push --force origin "$BRANCH"
 
           cat > /tmp/pr-body.md <<PREOF
           ## Embedded pi update
