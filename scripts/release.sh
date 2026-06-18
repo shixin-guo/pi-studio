@@ -86,7 +86,7 @@ echo "Regenerating bun.lock..."
 bun install --lockfile-only
 
 echo "Refreshing src-tauri/Cargo.lock..."
-# Cargo.lock contains a `pi-studio` entry whose version tracks Cargo.toml.
+# Cargo.lock contains a `picot` entry whose version tracks Cargo.toml.
 # Run `cargo update -p pi-studio` so the lockfile is in sync with the bumped
 # Cargo.toml *before* we commit, otherwise the next local cargo invocation
 # will leave a dirty Cargo.lock behind after the release commit is pushed.
@@ -99,8 +99,8 @@ elif [[ -x "$HOME/.cargo/bin/cargo" ]]; then
   CARGO_BIN="$HOME/.cargo/bin/cargo"
 fi
 if [[ -n "$CARGO_BIN" ]]; then
-  ( cd src-tauri && "$CARGO_BIN" update -p pi-studio --offline >/dev/null 2>&1 \
-      || "$CARGO_BIN" update -p pi-studio >/dev/null 2>&1 \
+  ( cd src-tauri && "$CARGO_BIN" update -p picot --offline >/dev/null 2>&1 \
+      || "$CARGO_BIN" update -p picot >/dev/null 2>&1 \
       || true )
 else
   echo "  (cargo not found; skipping Cargo.lock refresh)"
