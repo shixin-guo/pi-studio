@@ -303,6 +303,46 @@ body {
   font-size: 12px;
 }
 
+.session-empty-state {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
+}
+
+.session-empty-open-project {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: min(180px, 100%);
+  min-height: 136px;
+  padding: 18px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--duration) var(--ease),
+    border-color var(--duration) var(--ease),
+    transform var(--duration) var(--ease);
+}
+
+.session-empty-open-project:hover {
+  background: var(--bg-glass-hover);
+  border-color: var(--border-hover);
+  transform: translateY(-1px);
+}
+
+.session-empty-open-project svg {
+  color: var(--accent);
+}
+
 /* Loading skeletons */
 .session-skeleton {
   display: flex;
@@ -1828,6 +1868,34 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-extension-status.is-error {
+  padding: 8px 10px;
+  color: #991b1b;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-sm, 4px);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.settings-extension-status-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.settings-extension-status-note,
+.settings-extension-status-detail {
+  margin-top: 3px;
+  line-height: 16px;
+}
+
+.settings-extension-status-detail {
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  overflow-wrap: anywhere;
 }
 
 .settings-extension-actions {
@@ -4021,6 +4089,19 @@ body.hide-thinking .thinking-block {
 }
 #message-input::placeholder {
   color: var(--text-dim);
+}
+
+.composer-card.onboarding-disabled {
+  background: color-mix(in srgb, var(--bg-glass) 82%, var(--bg-solid));
+}
+
+.composer-setup-actions {
+  display: none;
+  padding: 2px 12px 10px;
+}
+
+.composer-card.onboarding-disabled .composer-setup-actions {
+  display: flex;
 }
 
 :root[data-theme="clean"] .composer-card:not(:focus-within):not(.streaming),

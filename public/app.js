@@ -12,6 +12,8 @@ import { FileBrowser } from "./file-browser.js";
 import { anchorHistoryToBottom } from "./history-scroll-anchor.js";
 import { setupMessagesInsets } from "./layout-insets.js";
 import { MessageRenderer } from "./message-renderer.js";
+import { getOnboardingState } from "./onboarding-state.js";
+import { renderPackageInstallFailure } from "./package-install-status.js";
 import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
 import { SessionSidebar } from "./session-sidebar.js";
 import {
@@ -160,12 +162,14 @@ const sidebar = new SessionSidebar(
   document.getElementById("session-list"),
   handleSessionSelect,
   handleNewProjectChat,
+  { onOpenProject: () => handleOpenFolder() },
 );
 
 // UI elements
 const messageInput = document.getElementById("message-input");
 const chatForm = document.getElementById("chat-form");
 const sendBtn = document.getElementById("send-btn");
+const composerOpenConfigBtn = document.getElementById("composer-open-config");
 const abortBtn = document.getElementById("abort-btn");
 const statusIndicator = document.getElementById("status-indicator");
 const statusText = document.getElementById("status-text");
@@ -1489,6 +1493,28 @@ let currentModelId = "";
 let availableModels = [];
 let currentThinkingLevel = "off";
 
+function currentOnboardingState() {
+  return getOnboardingState({
+    hasSessions: hasAnySessionsLoaded(),
+    workspacePath: getCurrentWorkspacePath(),
+    availableModels,
+  });
+}
+
+function openConfigurationSettings() {
+  return openSettings().then(() => selectSettingsTab("configuration"));
+}
+
+function updateOnboardingUI() {
+  const onboarding = currentOnboardingState();
+  const needsSetup = !onboarding.canQuery;
+  composerCard.classList.toggle("onboarding-disabled", needsSetup);
+  if (needsSetup) {
+    messageInput.placeholder = onboarding.message;
+  }
+  return onboarding;
+}
+
 async function fetchModelInfo() {
   try {
     const [modelsResp, stateResp] = await Promise.all([
@@ -1525,6 +1551,9 @@ async function fetchModelInfo() {
     }
   } catch (_e) {
     // ignore
+  } finally {
+    updateModelLabel();
+    updateUI();
   }
 }
 
@@ -1569,14 +1598,12 @@ function openModelDropdown() {
       empty.innerHTML = `
         <div style="padding:14px;color:var(--text-dim);font-size:12px;line-height:1.5">
           <div style="color:var(--text-primary);margin-bottom:6px">No models available</div>
-          <div>No API keys configured. Set a key in Settings &rarr; Authentication.</div>
+          <div>No API keys configured. Set a key in Settings &rarr; Configuration.</div>
           <button type="button" class="btn-primary" style="margin-top:10px">Open Settings</button>
         </div>`;
       empty.querySelector("button").addEventListener("click", () => {
         closeModelDropdown();
-        openSettings()
-          .then(() => selectSettingsTab("auth"))
-          .catch(() => {});
+        openConfigurationSettings().catch(() => {});
       });
       itemsContainer.appendChild(empty);
       return;
@@ -1642,6 +1669,9 @@ function closeModelDropdown() {
 }
 
 modelDropdownBtn.addEventListener("click", toggleModelDropdown);
+composerOpenConfigBtn?.addEventListener("click", () => {
+  openConfigurationSettings().catch(() => {});
+});
 
 // Close dropdown on outside click
 document.addEventListener("click", (e) => {
@@ -2739,6 +2769,7 @@ function updateConnectionStatus(status) {
 
 function updateUI() {
   const isStreaming = state.isStreaming;
+  const onboarding = updateOnboardingUI();
 
   composerCard.classList.toggle("streaming", isStreaming);
 
@@ -2752,8 +2783,8 @@ function updateUI() {
     statusText.textContent = "Connected";
   }
 
-  messageInput.disabled = false;
-  sendBtn.disabled = false;
+  messageInput.disabled = !onboarding.canQuery;
+  sendBtn.disabled = !onboarding.canQuery;
 
   if (isStreaming) {
     abortBtn.classList.remove("hidden");
@@ -2771,7 +2802,7 @@ function updateUI() {
     sendBtn.disabled = true;
     abortBtn.classList.add("hidden");
     messageInput.placeholder = "Waiting for current session to finish…";
-  } else {
+  } else if (onboarding.canQuery) {
     messageInput.placeholder = "Type a message...";
   }
 }
@@ -2810,20 +2841,19 @@ let loadInlineModelsEditor = async () => {};
 let loadApiKeysPanel = async () => {};
 
 function selectSettingsTab(tabKey = "general") {
+  const targetTabKey = tabKey === "auth" ? "configuration" : tabKey;
   settingsNavItems.forEach((item) => {
-    item.classList.toggle("active", item.dataset.settingsTab === tabKey);
+    item.classList.toggle("active", item.dataset.settingsTab === targetTabKey);
   });
   settingsTabs.forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.settingsPanel === tabKey);
+    tab.classList.toggle("active", tab.dataset.settingsPanel === targetTabKey);
   });
-  if (tabKey === "configuration") {
+  if (targetTabKey === "configuration") {
+    loadApiKeysPanel();
     loadInlineConfigEditor();
     loadInlineModelsEditor();
   }
-  if (tabKey === "auth") {
-    loadApiKeysPanel();
-  }
-  if (tabKey === "extensions") {
+  if (targetTabKey === "extensions") {
     loadBrowsePackages();
   }
 }
@@ -2883,19 +2913,6 @@ function setExtensionActionButton(button, label, loading = false) {
     return;
   }
   button.textContent = label;
-}
-
-function summarizePackageError(err) {
-  const raw = String(err?.message || err || "unknown error");
-  if (raw.includes("EACCES") || raw.includes("permission denied")) {
-    return "Permission denied in ~/.pi/agent/npm (check owner/permissions).";
-  }
-  if (raw.includes("ENOENT")) {
-    return "Missing file or directory while running embedded pi command.";
-  }
-  const compact = raw.replace(/\s+/g, " ").trim();
-  if (compact.length <= 120) return compact;
-  return `${compact.slice(0, 120)}...`;
 }
 
 // ═══════════════════════════════════════
@@ -3244,6 +3261,7 @@ function createBrowseRow(pkg) {
       const previous = installed ? "Uninstall" : "Install";
       setExtensionActionButton(button, installed ? "Uninstalling..." : "Installing...", true);
       status.hidden = false;
+      status.classList.remove("is-error");
       status.textContent = installed ? "Removing..." : "Installing...";
       status.title = status.textContent;
       try {
@@ -3256,10 +3274,7 @@ function createBrowseRow(pkg) {
         }
         renderBrowsePackages();
       } catch (err) {
-        status.hidden = false;
-        const fullMessage = String(err?.message || err || "unknown error");
-        status.textContent = `Failed: ${summarizePackageError(fullMessage)}`;
-        status.title = fullMessage;
+        renderPackageInstallFailure(status, err);
         button.disabled = false;
         button.classList.remove("loading");
         setExtensionActionButton(button, previous);
@@ -3461,6 +3476,10 @@ setupSettingsToggles({
   rpcCommand,
   fetchModelInfo,
   closeSettings,
+  onModelConfigurationChanged: async () => {
+    await fetchModelInfo();
+    updateUI();
+  },
   clearSettingsSaveMessage,
   setSettingsSaveButtonSaving,
   showSettingsSaveError,
@@ -3517,7 +3536,7 @@ document.querySelector(".mode-link:first-child")?.addEventListener("click", () =
 // Open Folder as workspace
 // ═══════════════════════════════════════
 
-openFolderBtn?.addEventListener("click", async () => {
+async function handleOpenFolder() {
   if (workspaceLaunchInProgress) return;
   setWorkspaceLaunchInProgress(true);
   try {
@@ -3532,13 +3551,16 @@ openFolderBtn?.addEventListener("click", async () => {
   } finally {
     setWorkspaceLaunchInProgress(false);
   }
-});
+}
+
+openFolderBtn?.addEventListener("click", handleOpenFolder);
 
 wsClient.connect();
 dismissBootSwapOverlayWhenReady();
 renderWorkspaceWelcome();
 sidebar.loadSessions().then(() => {
   sessionsLoaded = true;
+  updateUI();
   if (!hasAnySessionsLoaded()) {
     renderWorkspaceWelcome();
   }

@@ -3,10 +3,11 @@
  */
 
 export class SessionSidebar {
-  constructor(container, onSessionSelect, onNewChat) {
+  constructor(container, onSessionSelect, onNewChat, options = {}) {
     this.container = container;
     this.onSessionSelect = onSessionSelect;
     this.onNewChat = onNewChat;
+    this.onOpenProject = options.onOpenProject || null;
     this.activeSessionFile = null;
     this.projects = [];
     this.collapsedProjects = new Set();
@@ -593,7 +594,7 @@ export class SessionSidebar {
 
   render() {
     if (this.projects.length === 0) {
-      this.container.innerHTML = '<div class="session-loading">No sessions found</div>';
+      this.renderEmptyState();
       return;
     }
 
@@ -744,6 +745,24 @@ export class SessionSidebar {
     }
 
     if (this.searchQuery) this.applySearch();
+  }
+
+  renderEmptyState() {
+    this.container.innerHTML = `
+      <div class="session-empty-state">
+        <button type="button" class="session-empty-open-project" title="Open project" aria-label="Open project">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+            <line x1="12" y1="12" x2="12" y2="18"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+          </svg>
+          <span>Open Project</span>
+        </button>
+      </div>
+    `;
+    this.container
+      .querySelector(".session-empty-open-project")
+      ?.addEventListener("click", () => this.onOpenProject?.());
   }
 
   formatTime(isoTimestamp) {

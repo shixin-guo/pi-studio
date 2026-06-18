@@ -2,6 +2,7 @@ export function setupSettingsEditors({
   rpcCommand,
   fetchModelInfo,
   closeSettings,
+  onModelConfigurationChanged,
   clearSettingsSaveMessage,
   setSettingsSaveButtonSaving,
   showSettingsSaveError,
@@ -158,6 +159,7 @@ export function setupSettingsEditors({
         `Saving ${p.provider} key...`,
       );
       if (resp?.success) {
+        await onModelConfigurationChanged?.();
         loadApiKeysPanel();
       } else {
         err.textContent = resp?.error || "Failed to save key.";
@@ -412,9 +414,7 @@ export function setupSettingsEditors({
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || "Failed to save models.json");
       showSettingsSaveSuccess(inlineModelsError);
-      try {
-        await fetchModelInfo?.();
-      } catch {}
+      await onModelConfigurationChanged?.();
     } catch (e) {
       showInlineModelsError(e.message || String(e));
     } finally {

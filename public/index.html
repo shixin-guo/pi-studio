@@ -161,6 +161,11 @@
               autocomplete="off"
               rows="2"
             ></textarea>
+            <div class="composer-setup-actions" id="composer-setup-actions">
+              <button type="button" class="settings-value-btn" id="composer-open-config">
+                Open Configuration
+              </button>
+            </div>
             <div class="composer-toolbar">
               <div class="composer-toolbar-left">
                 <button type="button" class="input-icon-btn" id="attach-btn" title="Attach image" aria-label="Attach image" tabindex="-1">
@@ -219,7 +224,6 @@
       <button class="settings-nav-item active" data-settings-tab="general">General</button>
       <button class="settings-nav-item" data-settings-tab="extensions">Extensions</button>
       <button class="settings-nav-item" data-settings-tab="usage">Usage</button>
-      <button class="settings-nav-item" data-settings-tab="auth">Authentication</button>
       <button class="settings-nav-item" data-settings-tab="configuration">Configuration</button>
       <button class="settings-nav-back" id="settings-close"><span class="settings-nav-back-icon">‹</span> Back to chat</button>
     </aside>
@@ -326,11 +330,11 @@
         </div>
       </div>
 
-      <div class="settings-tab" data-settings-panel="auth">
-        <div class="settings-header"><h3>Authentication</h3></div>
+      <div class="settings-tab" data-settings-panel="configuration">
+        <div class="settings-header"><h3>Configuration</h3></div>
         <div class="settings-body">
           <div class="settings-section">
-            <div class="settings-section-title">API keys</div>
+            <div class="settings-section-title">Authentication</div>
             <p class="settings-help">
               Keys are stored locally in <code>~/.pi/agent/auth.json</code> (chmod 600).
               Pi Studio launched from Finder does not read shell environment
@@ -347,12 +351,7 @@
               <button class="settings-toggle" id="toggle-auth"></button>
             </div>
           </div>
-        </div>
-      </div>
 
-      <div class="settings-tab" data-settings-panel="configuration">
-        <div class="settings-header"><h3>Configuration</h3></div>
-        <div class="settings-body">
           <div class="settings-section">
             <div class="settings-section-title">Agent</div>
             <div class="settings-config-meta">
