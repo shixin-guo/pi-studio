@@ -1,6 +1,6 @@
 {
   "name": "picot",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Local Codex-style desktop GUI for the Pi coding agent",
   "keywords": [
     "pi",
