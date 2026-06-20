@@ -69,7 +69,7 @@ pub fn locked_pi_version() -> &'static str {
 #[cfg(target_os = "windows")]
 fn configure_child_process_for_windows(command: &mut Command) {
     // Prevent child `pi.exe` processes from creating a visible console window
-    // when Pi Studio runs as a GUI app on Windows.
+    // when Picot runs as a GUI app on Windows.
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
@@ -158,7 +158,7 @@ fn build_augmented_path() -> String {
 /// `\\?\UNC\`) from a path string.
 ///
 /// Tauri's `resource_dir()` returns extended-length paths (e.g.
-/// `\\?\C:\Users\...\PiStudio\pi\pi.exe`). The embedded pi (Bun 1.3.10,
+/// `\\?\C:\Users\...\Picot\pi\pi.exe`). The embedded pi (Bun 1.3.10,
 /// Windows arm64, compiled standalone) segfaults (`Segmentation fault at
 /// address 0x18`) when it is launched with — or asked to load an
 /// `--extension` from — a `\\?\`-prefixed path. Passing the plain
@@ -179,7 +179,7 @@ fn strip_verbatim_prefix(path: &str) -> String {
 /// `--extension` argument to the embedded pi binary.
 ///
 /// On Windows the Bun-compiled pi binary truncates `--extension` values at the
-/// first space (e.g. `C:\...\Pi Studio\...\embedded-server.mjs` is loaded as
+/// first space (e.g. `C:\...\Picot\...\embedded-server.mjs` is loaded as
 /// `C:\...\Pi`), which then fails to load and segfaults the process. Since Pi
 /// Studio always installs under a space-containing path, we mirror the
 /// extension file into a space-free directory under the system temp dir and
@@ -339,7 +339,7 @@ impl PiManager {
             "Could not find embedded pi binary. Tried:\n{}\n\n\
              For dev: run `bun run fetch:pi` from the repo root.\n\
              For release: the .app bundle is missing `resources/pi/{}`. \
-             Reinstall Pi Studio.",
+             Reinstall Picot.",
             tried_str, bin_name
         ))
     }
@@ -350,7 +350,7 @@ impl PiManager {
     ///
     /// 1. `PI_STUDIO_EXTENSION` env var (explicit override; useful for tests).
     /// 2. Bundled `extensions/embedded-server.mjs` next to `static_dir`. This
-    ///    is what shipped Pi Studio installs use; the bundle is produced by
+    ///    is what shipped Picot installs use; the bundle is produced by
     ///    `scripts/build-extensions.js` and is fully self-contained (no
     ///    `node_modules` lookup at runtime).
     /// 3. Source `extensions/embedded-server.ts` next to `static_dir`. Used
@@ -454,10 +454,10 @@ impl PiManager {
 
         // The embedded pi (Bun-compiled standalone) mis-parses `--extension`
         // paths that contain spaces on Windows: it truncates at the first
-        // space, so `...\Pi Studio\extensions\embedded-server.mjs` is loaded
+        // space, so `...\Picot\extensions\embedded-server.mjs` is loaded
         // as `...\Pi`, which then fails to load and crashes the process
         // (segfault) during extension-load error handling. The primary fix is
-        // the space-free `productName` ("PiStudio") so the install dir has no
+        // the space-free `productName` ("Picot") so the install dir has no
         // space; this mirroring remains as a defensive fallback for paths that
         // can still contain spaces out of our control (e.g. a Windows username
         // like `C:\Users\Shi Xin\...`). Work around it by mirroring the
@@ -511,7 +511,7 @@ impl PiManager {
             format!(
                 "Failed to spawn embedded pi ({}): {}. \
                  The bundled binary may be corrupted or unsupported on this OS/arch. \
-                 Reinstall Pi Studio, or for dev rerun `bun run fetch:pi`.",
+                 Reinstall Picot, or for dev rerun `bun run fetch:pi`.",
                 pi_bin.display(),
                 e,
             )

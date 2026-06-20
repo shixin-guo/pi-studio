@@ -6,7 +6,7 @@
  *
  * Why this exists
  * ---------------
- * Pi Studio used to find `pi` on the user's PATH, harvest API keys from
+ * Picot used to find `pi` on the user's PATH, harvest API keys from
  * their login shell, and probe several install locations. That created a
  * long tail of "works on dev box, broken on Finder-launched .app" bugs.
  * By embedding a known pi version inside the .app, we make pi-studio's

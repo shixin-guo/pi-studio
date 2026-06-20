@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Pi Studio</title>
+  <title>Picot</title>
   <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg">
   <meta name="theme-color" content="#f5f3ef">
   <link rel="stylesheet" href="style-theme.css">
@@ -54,7 +54,7 @@
     <div class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="mode-toggle" id="mode-toggle">
-          <span class="mode-link active" title="Chat"><img src="icons/logo-dark.svg" alt="Pi Studio logo" class="tau-icon"></span>
+          <span class="mode-link active" title="Chat"><img src="icons/logo-dark.svg" alt="Picot logo" class="tau-icon"></span>
         </div>
         <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="Search..." autocomplete="off" />
         <div class="sidebar-actions">
@@ -126,8 +126,8 @@
       <!-- Messages Container -->
       <div class="messages" id="messages">
         <div class="welcome">
-          <div class="welcome-icon"><img src="icons/logo-dark.svg" alt="Pi Studio logo" class="tau-icon-welcome"></div>
-          <p>Welcome to Pi Studio</p>
+          <div class="welcome-icon"><img src="icons/logo-dark.svg" alt="Picot logo" class="tau-icon-welcome"></div>
+          <p>Welcome to Picot</p>
           <p class="hint">Type a message below to start chatting with Pi, or select a session from the sidebar.</p>
           <div class="shortcuts-hint">
             <span>/ Focus input</span>
@@ -254,7 +254,7 @@
               <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
             </div>
             <div class="settings-row">
-              <span class="settings-label">Pi Studio version</span>
+              <span class="settings-label">Picot version</span>
               <span class="settings-static-value" id="setting-app-version-value">Loading...</span>
             </div>
             <div class="settings-row">
@@ -328,7 +328,7 @@
             <div class="settings-section-title">Authentication</div>
             <p class="settings-help">
               Keys are stored locally in <code>~/.pi/agent/auth.json</code> (chmod 600).
-              Pi Studio launched from Finder does not read shell environment
+              Picot launched from Finder does not read shell environment
               variables, so set keys here for them to stick across launches.
             </p>
             <div class="settings-api-keys" id="settings-api-keys">
@@ -429,7 +429,7 @@
       <div class="lan-qr-modal-body">
         <div class="lan-qr-loading" id="lan-qr-loading">Generating QR code…</div>
         <img class="lan-qr-image hidden" id="lan-qr-image" alt="QR code for mobile access">
-        <div class="lan-qr-hint">Scan with your phone to open Pi Studio on the same network</div>
+        <div class="lan-qr-hint">Scan with your phone to open Picot on the same network</div>
       </div>
     </div>
   </div>

@@ -1,9 +1,9 @@
 /**
- * Embedded Server Extension for Pi Studio desktop
+ * Embedded Server Extension for Picot desktop
  *
- * Starts the HTTP + WebSocket server that the Pi Studio Tauri WebView talks to.
- * This is not a user-facing "pi extension" — it ships inside the Pi Studio
- * .app bundle and is loaded by the bundled `pi` binary that Pi Studio spawns
+ * Starts the HTTP + WebSocket server that the Picot Tauri WebView talks to.
+ * This is not a user-facing "pi extension" — it ships inside the Picot
+ * .app bundle and is loaded by the bundled `pi` binary that Picot spawns
  * via `--extension <bundle>/embedded-server.mjs`.
  *
  * Responsibilities:
@@ -20,12 +20,12 @@
  * - QR / pairing flow — LAN mobile access is advertised as a plain URL
  * - Basic auth — the mobile entry point is an explicit local-network dev mode
  * - `/studiostart` / `/studiostop` / `/qr` commands — server lifecycle is
- *   tied 1:1 to the pi process Pi Studio spawns
+ *   tied 1:1 to the pi process Picot spawns
  * - Cross-process instance discovery via `~/.pi/pistudio-instances/` —
- *   Pi Studio's Rust side already knows which ports it spawned. We keep a
+ *   Picot's Rust side already knows which ports it spawned. We keep a
  *   trivial single-entry registry so the frontend's `active` state stays
  *   correct without needing a Tauri invoke for `/api/instances` queries.
- * - `pi --version` exec probing — version is forwarded by Pi Studio via
+ * - `pi --version` exec probing — version is forwarded by Picot via
  *   `PI_STUDIO_PI_VERSION` env var.
  */
 
@@ -50,7 +50,7 @@ import {
 // `http.createServer(...).on("upgrade", ...)` accepts the upgrade event
 // but `socket.write()` (which `ws.handleUpgrade` uses to send the
 // `HTTP/1.1 101 Switching Protocols` reply) is silently dropped, so the
-// client never completes the handshake. The result in Pi Studio is
+// client never completes the handshake. The result in Picot is
 // "Disconnected" forever and chat sessions never render.
 //
 // `Bun.serve()` ships its own native WebSocket upgrade path and *does*
@@ -62,7 +62,7 @@ const HAS_BUN_SERVE =
   typeof (globalThis as any).Bun !== "undefined" &&
   typeof (globalThis as any).Bun?.serve === "function";
 
-// Pi Studio settings live under `pistudio` key in ~/.pi/agent/settings.json.
+// Picot settings live under `pistudio` key in ~/.pi/agent/settings.json.
 // We only honor the fields that still make sense in desktop-only mode.
 // TODO(rename->picot): key is `pistudio` for historical reasons. Changing it to `picot`
 // would break existing users' settings — add a migration path before renaming.
@@ -164,9 +164,9 @@ function loadSettings(): { port: number } {
 const SETTINGS = loadSettings();
 const PORT = SETTINGS.port;
 const BIND_HOST = LAN_BIND_HOST;
-// Forwarded by Pi Studio (Rust side) from `scripts/pi-version.json`. We deliberately
+// Forwarded by Picot (Rust side) from `scripts/pi-version.json`. We deliberately
 // do not call `pi --version` here: this extension always runs *inside* the pi
-// binary Pi Studio spawned, so the version is known.
+// binary Picot spawned, so the version is known.
 const EMBEDDED_PI_VERSION = process.env.PI_STUDIO_PI_VERSION || "";
 
 const STATIC_DIR = process.env.PI_STUDIO_STATIC_DIR || findPublicDir();
@@ -181,7 +181,7 @@ function findPublicDir(): string {
     candidates.push(normalized);
   };
 
-  // Common extension-relative paths. Pi Studio's Rust side always sets
+  // Common extension-relative paths. Picot's Rust side always sets
   // PI_STUDIO_STATIC_DIR, so this fallback chain is only exercised in
   // weird dev scenarios (e.g. loading the extension directly via pi -e).
   addCandidate(path.resolve(__dirname, "public"));
@@ -202,7 +202,7 @@ const INSTANCES_DIR = path.join(path.dirname(PI_AGENT_ROOT), "pistudio-instances
 // `/api/instances` response reflects the running workspace without needing
 // a Tauri invoke. Unlike the old mirror-server
 // which scanned the whole INSTANCES_DIR (for tmux / standalone pi
-// processes), we only ever write our own entry: Pi Studio's Rust side
+// processes), we only ever write our own entry: Picot's Rust side
 // manages all pi processes it spawns.
 function registerInstance(port: number, sessionFile: string, cwd: string) {
   fs.mkdirSync(INSTANCES_DIR, { recursive: true });
@@ -863,7 +863,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "get_pi_version": {
-          // Embedded pi version is forwarded by Pi Studio (Rust) at spawn time.
+          // Embedded pi version is forwarded by Picot (Rust) at spawn time.
           sendTo(ws, success("get_pi_version", { version: EMBEDDED_PI_VERSION }));
           break;
         }
@@ -881,7 +881,7 @@ export default function (pi: ExtensionAPI) {
 
         // ─── API keys (auth.json) ───
         //
-        // Why: GUI-launched Pi Studio (Finder/dock) does not inherit
+        // Why: GUI-launched Picot (Finder/dock) does not inherit
         // ANTHROPIC_API_KEY etc. from the user's login shell, and we
         // deliberately removed the brittle login-shell env-harvest path in
         // commit 8b1f5e4. The user therefore needs an in-app way to write
@@ -1516,14 +1516,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Session switch — in embedded mode, this is a no-op (session is controlled by Pi Studio).
+    // Session switch — in embedded mode, this is a no-op (session is controlled by Picot).
     if (urlPath === "/api/sessions/switch" && req.method === "POST") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
           success: true,
           embedded: true,
-          note: "Session switching is controlled by Pi Studio's Rust side",
+          note: "Session switching is controlled by Picot's Rust side",
         }),
       );
       return;
@@ -1553,7 +1553,7 @@ export default function (pi: ExtensionAPI) {
           }
           // Open a new terminal window running pi in the selected directory.
           // Note: this still uses the user's PATH `pi`, not the embedded one,
-          // because Pi Studio's own workspace flow lives in Tauri commands;
+          // because Picot's own workspace flow lives in Tauri commands;
           // this endpoint is the legacy "open in external terminal" affordance.
           const { execSync } = require("node:child_process");
           const escaped = resolved.replace(/'/g, "'\\''");
@@ -1629,7 +1629,7 @@ export default function (pi: ExtensionAPI) {
     // OpenRouter routing overrides, etc). See docs/models.md in the embedded
     // pi runtime for the schema. The frontend Settings → Configuration →
     // "LLM providers" panel reads and writes through these endpoints so users
-    // never have to leave Pi Studio to edit the file by hand.
+    // never have to leave Picot to edit the file by hand.
     //
     // After a successful save we call modelRegistry.refresh() so the new
     // providers/models show up in the model picker immediately — matching the
@@ -2748,7 +2748,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     const tryListen = (port: number, maxAttempts = 10) => {
-      // Pi Studio's mobile dev mode is always reachable from the local network.
+      // Picot's mobile dev mode is always reachable from the local network.
       server.listen(port, BIND_HOST, () => {
         onListening(port);
         globalState.server = {
@@ -2778,7 +2778,7 @@ export default function (pi: ExtensionAPI) {
       globalState.localUrl = `http://${localHost}:${port}`;
       const lanUrls = buildLanUrls(port);
       globalState.lanUrl = lanUrls[0] || "";
-      console.log(`[Embedded] Pi Studio embedded server running on ${globalState.localUrl}`);
+      console.log(`[Embedded] Picot embedded server running on ${globalState.localUrl}`);
       const statusTarget = !isLoopbackHost(BIND_HOST)
         ? `${BIND_HOST}:${port}${globalState.lanUrl ? ` (${globalState.lanUrl})` : ""}`
         : `${BIND_HOST}:${port}`;

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════
-   Pi Studio — Dark Glassmorphism
+   Picot — Dark Glassmorphism
    ═══════════════════════════════════════════════════════ */
 
 * {
@@ -852,7 +852,7 @@ body {
 
 /* Mirror mode: read-only input */
 .input-area.mirror-readonly {
-  opacity: 0.5;
+  opacity: 1;
   pointer-events: none;
 }
 
@@ -3799,9 +3799,7 @@ body.hide-thinking .thinking-block {
   padding-bottom: 10px;
   padding-left: max(16px, calc((100% - 960px) / 2));
   padding-right: max(16px, calc((100% - 960px) / 2));
-  background: var(--header-bg);
-  backdrop-filter: blur(40px) saturate(1.5);
-  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  background: var(--bg-solid);
   border-top: none;
   position: absolute;
   bottom: 0;
@@ -4085,7 +4083,7 @@ body.hide-thinking .thinking-block {
 }
 
 #message-input:disabled {
-  opacity: 0.35;
+  opacity: 1;
   cursor: not-allowed;
 }
 #message-input::placeholder {

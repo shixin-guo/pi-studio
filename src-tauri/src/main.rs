@@ -240,7 +240,7 @@ fn macos_installed_app_names() -> std::collections::HashSet<String> {
     names
 }
 
-/// List the external apps Pi Studio can open a project in. On macOS this is
+/// List the external apps Picot can open a project in. On macOS this is
 /// filtered down to the apps actually installed; on other platforms it falls
 /// back to a fixed list of CLI launchers (resolved against PATH at open time).
 fn list_installed_apps_core() -> Vec<AppTarget> {
@@ -442,7 +442,7 @@ fn open_workspace_window(app: &AppHandle, port: u16, broker_ws_url: &str) -> Res
 
     let builder =
         WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.parse().unwrap()))
-            .title("Pi Studio")
+            .title("Picot")
             .inner_size(1300.0, 860.0)
             .min_inner_size(800.0, 600.0)
             .icon(icon)
@@ -475,7 +475,7 @@ fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), Str
     let url = format!("bootstrap.html?startupError={}", encoded_error);
 
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
-        .title("Pi Studio")
+        .title("Picot")
         .inner_size(900.0, 640.0)
         .min_inner_size(700.0, 480.0)
         .icon(icon)
@@ -972,7 +972,7 @@ fn main() {
             //   1. We can't drive that process: `cmd_new_session` /
             //      `cmd_switch_session` write to *our* `PiManager.processes`
             //      map. A pi we didn't spawn (e.g. left over from an installed
-            //      Pi Studio still running, or a previous `bun run dev` whose
+            //      Picot still running, or a previous `bun run dev` whose
             //      Rust side crashed without taking its children with it) is
             //      not in that map, so every RPC fails with
             //      `No pi instance on port <p>` and the UI looks broken.
@@ -982,17 +982,17 @@ fn main() {
             //      and a different session history. That's strictly worse
             //      than starting our own.
             //
-            // Allocating a fresh port for *this* Pi Studio instance is the
+            // Allocating a fresh port for *this* Picot instance is the
             // simple invariant that avoids both classes of confusion. The
             // tradeoff is that `http://localhost:47821` is no longer a
-            // guaranteed entry point — but Pi Studio doesn't promise that;
+            // guaranteed entry point — but Picot doesn't promise that;
             // the WebView discovers its port via the window URL.
             let initial_port = manager.next_port();
 
             let mut startup_ok = true;
             if initial_port != 47821 {
                 log::warn!(
-                    "[pi-desktop] port 47821 unavailable, using {} instead (likely another Pi Studio instance is running)",
+                    "[pi-desktop] port 47821 unavailable, using {} instead (likely another Picot instance is running)",
                     initial_port
                 );
             }
@@ -1006,10 +1006,10 @@ fn main() {
                     );
                     app.dialog()
                         .message(format!(
-                            "Pi Studio could not start the embedded pi runtime.\n\n{}\n\nThe Pi Studio installation may be incomplete or corrupted. Please reinstall Pi Studio and try again.",
+                            "Picot could not start the embedded pi runtime.\n\n{}\n\nThe Picot installation may be incomplete or corrupted. Please reinstall Picot and try again.",
                             err
                         ))
-                        .title("Pi Studio startup failed")
+                        .title("Picot startup failed")
                         .kind(MessageDialogKind::Error)
                         .show(|_| {});
                 }

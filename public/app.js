@@ -219,7 +219,7 @@ let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let isMirrorMode = false; // Set when mirror_sync received
-let liveInstances = []; // All running Pi Studio instances [{port, sessionFile, cwd}]
+let liveInstances = []; // All running Picot instances [{port, sessionFile, cwd}]
 let workspaceLaunchInProgress = false;
 // When true, the next foreground message lifecycle events should reload the
 // sidebar until the newly persisted session file appears in the list.
@@ -1201,7 +1201,7 @@ async function addImageFiles(files) {
       const img = await processImageFile(file);
       pendingImages.push(img);
     } catch (e) {
-      console.error("[Pi Studio] Image processing failed:", e);
+      console.error("[Picot] Image processing failed:", e);
     }
   }
   renderImagePreviews();
@@ -1306,9 +1306,7 @@ function sendMessage() {
 
   if (pendingImages.length > 0) {
     cmd.images = pendingImages.map((img) => {
-      console.log(
-        `[Pi Studio] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`,
-      );
+      console.log(`[Picot] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
       return {
         type: "image",
         data: img.data,
@@ -3557,7 +3555,7 @@ if (isMobile()) {
   });
 }
 
-// Make the Pi Studio icon in sidebar switch back to chat
+// Make the Picot icon in sidebar switch back to chat
 document.querySelector(".mode-link:first-child")?.addEventListener("click", () => {
   closeSettings();
 });
@@ -3611,4 +3609,4 @@ if (splash) {
   });
 }
 
-console.log("🚀 Pi Studio initialized");
+console.log("🚀 Picot initialized");

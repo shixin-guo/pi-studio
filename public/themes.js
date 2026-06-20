@@ -2,7 +2,7 @@
  * Theme system — four themes: two light, two dark
  *
  * Storage note: the active theme is persisted in a cookie (not
- * localStorage). Pi Studio spawns one pi process per workspace, each on
+ * localStorage). Picot spawns one pi process per workspace, each on
  * its own port, and every workspace window is loaded from
  * `http://localhost:<port>`. localStorage is partitioned per origin, so
  * `localhost:3001` and `localhost:3002` would each see a different

@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-/// Hard guarantee: a Pi Studio release build CANNOT be produced without the
+/// Hard guarantee: a Picot release build CANNOT be produced without the
 /// embedded pi binary inside `src-tauri/resources/pi/`.
 ///
 /// Why this lives in build.rs
@@ -64,9 +64,9 @@ fn main() {
     if !bin_path.is_file() {
         panic!(
             "\n\n\
-             Pi Studio release build aborted: embedded pi binary is missing.\n\
+             Picot release build aborted: embedded pi binary is missing.\n\
              Expected: {}\n\n\
-             Pi Studio bundles the pi runtime inside the .app so end users do\n\
+             Picot bundles the pi runtime inside the .app so end users do\n\
              not need to fetch anything. Release builds therefore refuse to\n\
              produce a .app without it.\n\n\
              Fix: run `bun run fetch:pi` from the repo root before building.\n\
@@ -80,7 +80,7 @@ fn main() {
     if !extension_bundle_path.is_file() {
         panic!(
             "\n\n\
-             Pi Studio release build aborted: embedded-server extension bundle is missing.\n\
+             Picot release build aborted: embedded-server extension bundle is missing.\n\
              Expected: {}\n\n\
              Release builds ship the bundled extension instead of relying on\n\
              repo-local TypeScript sources or node_modules.\n\n\

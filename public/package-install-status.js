@@ -23,8 +23,8 @@ export function renderPackageInstallFailure(status, err, operation = "install") 
   const npmNote = document.createElement("div");
   npmNote.className = "settings-extension-status-note";
   npmNote.textContent = isUninstall
-    ? "Pi Studio could not remove this extension package. Check the error details, then try again."
-    : "This extension requires npm. Make sure npm is installed and available to Pi Studio, then try again.";
+    ? "Picot could not remove this extension package. Check the error details, then try again."
+    : "This extension requires npm. Make sure npm is installed and available to Picot, then try again.";
   status.appendChild(npmNote);
 
   const detail = document.createElement("div");

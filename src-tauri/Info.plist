@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Pi Studio needs microphone access for voice input.</string>
+  <string>Picot needs microphone access for voice input.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Pi Studio uses speech recognition to convert your voice to text.</string>
+  <string>Picot uses speech recognition to convert your voice to text.</string>
 </dict>
 </plist>
