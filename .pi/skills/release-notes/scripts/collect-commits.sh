@@ -5,7 +5,10 @@
 # Usage: scripts/collect-commits.sh [tag]   (tag defaults to most recent tag)
 set -euo pipefail
 
-REPO_SLUG="shixin-guo/picot"
+# Derive the repo slug from the origin remote (no hardcoded name).
+REPO_SLUG="$(git remote get-url origin 2>/dev/null \
+  | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+REPO_SLUG="${REPO_SLUG:-shixin-guo/picot}"
 TAG="${1:-$(git describe --tags --abbrev=0)}"
 
 if ! git rev-parse --verify "$TAG" >/dev/null 2>&1; then
