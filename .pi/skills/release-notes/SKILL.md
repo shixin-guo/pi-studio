@@ -26,11 +26,16 @@ whose filenames lag the tag. Always go through `bun run release`.
 Requirements it enforces: clean working tree, on a branch (not detached), tag
 not already present locally or on origin.
 
-After it pushes, the Release workflow runs (~10–15 min). Wait until the GitHub
-release for the tag exists before phase 2:
+After it pushes, the Release workflow runs (tauri-action typically ~7 min; the
+release appears once the first platform job finishes uploading). Poll until the
+GitHub release for the tag exists, then proceed to phase 2:
 
 ```bash
-gh run list --workflow Release --limit 1
+# poll roughly every 60s; the release shows up after the first job uploads
+until gh release view <tag> --json name >/dev/null 2>&1; do
+  gh run list --workflow Release --limit 1
+  sleep 60
+done
 gh release view <tag> --json name,assets --jq '{name, assets:(.assets|length)}'
 ```
 
