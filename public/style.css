@@ -231,6 +231,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  border-radius: 8px;
 }
 
 .sidebar-settings-btn {
@@ -249,26 +250,27 @@ body {
   transition: all var(--duration) var(--ease);
 }
 
-.sidebar-settings-btn:hover {
+.sidebar-settings-row:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border);
   color: var(--text-primary);
 }
 
-.sidebar-settings-btn:active {
+.sidebar-settings-row:active {
   opacity: 0.75;
 }
 
 .sidebar-update-pill {
   border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 4px 10px;
+  border-radius: 8px;
+  padding: 4px 8px;
   font-size: 12px;
   font-family: inherit;
   background: #0a84ff;
   color: #fff;
   cursor: pointer;
   transition: all var(--duration) var(--ease);
+  margin-right: 4px;
 }
 
 .sidebar-update-pill:hover {
@@ -5414,6 +5416,30 @@ html.macos-overlay .settings-content {
   color: var(--text-dim);
   text-align: center;
   line-height: 1.5;
+}
+
+.lan-qr-open-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding: 2px 4px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--accent-text);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.lan-qr-open-link:hover {
+  opacity: 0.8;
+}
+
+.lan-qr-open-link.hidden {
+  display: none;
 }
 
 .lan-qr-btn {

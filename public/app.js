@@ -2719,6 +2719,8 @@ const lanQrModalBackdrop = document.getElementById("lan-qr-modal-backdrop");
 const lanQrModalClose = document.getElementById("lan-qr-modal-close");
 const lanQrLoading = document.getElementById("lan-qr-loading");
 const lanQrImage = document.getElementById("lan-qr-image");
+const lanQrOpenLink = document.getElementById("lan-qr-open-link");
+let lanQrUrl = "";
 
 function updateLanQrButton(url = "") {
   if (!lanQrBtn) return;
@@ -2734,6 +2736,8 @@ async function openLanQrModal() {
   lanQrModal.classList.remove("hidden");
   if (lanQrLoading) lanQrLoading.style.display = "";
   if (lanQrImage) lanQrImage.classList.add("hidden");
+  if (lanQrOpenLink) lanQrOpenLink.classList.add("hidden");
+  lanQrUrl = "";
   try {
     const res = await fetch("/api/lan-qr");
     if (!res.ok) throw new Error("unavailable");
@@ -2741,6 +2745,10 @@ async function openLanQrModal() {
     if (lanQrImage) {
       lanQrImage.src = data.dataUrl;
       lanQrImage.classList.remove("hidden");
+    }
+    if (typeof data.url === "string" && data.url) {
+      lanQrUrl = data.url;
+      if (lanQrOpenLink) lanQrOpenLink.classList.remove("hidden");
     }
     if (lanQrLoading) lanQrLoading.style.display = "none";
   } catch {
@@ -2755,6 +2763,10 @@ function closeLanQrModal() {
 if (lanQrBtn) lanQrBtn.addEventListener("click", openLanQrModal);
 if (lanQrModalBackdrop) lanQrModalBackdrop.addEventListener("click", closeLanQrModal);
 if (lanQrModalClose) lanQrModalClose.addEventListener("click", closeLanQrModal);
+if (lanQrOpenLink)
+  lanQrOpenLink.addEventListener("click", () => {
+    if (lanQrUrl) openExternalLink(lanQrUrl);
+  });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && lanQrModal && !lanQrModal.classList.contains("hidden")) {
     closeLanQrModal();
