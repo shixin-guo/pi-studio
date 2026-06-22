@@ -5,7 +5,7 @@
 # Usage: scripts/collect-commits.sh [tag]   (tag defaults to most recent tag)
 set -euo pipefail
 
-REPO_SLUG="shixin-guo/pi-web-ui"
+REPO_SLUG="shixin-guo/picot"
 TAG="${1:-$(git describe --tags --abbrev=0)}"
 
 if ! git rev-parse --verify "$TAG" >/dev/null 2>&1; then
